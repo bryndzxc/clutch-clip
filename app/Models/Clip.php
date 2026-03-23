@@ -16,12 +16,18 @@ class Clip extends Model
         'clip_path',
         'thumbnail_path',
         'score',
+        'label',
+        'refined_path',
+        'muted',
+        'refined_at',
     ];
 
     protected function casts(): array
     {
         return [
-            'duration' => 'decimal:2',
+            'duration'    => 'decimal:2',
+            'muted'       => 'boolean',
+            'refined_at'  => 'datetime',
         ];
     }
 
@@ -48,6 +54,33 @@ class Clip extends Model
             'video' => $this->video_id,
             'clip'  => $this->id,
         ]);
+    }
+
+    /**
+     * Route URL for streaming the refined export, or null if none exists.
+     */
+    public function getRefinedUrl(): ?string
+    {
+        if (!$this->refined_path) {
+            return null;
+        }
+
+        return route('clips.serveRefined', [
+            'video' => $this->video_id,
+            'clip'  => $this->id,
+        ]);
+    }
+
+    /**
+     * Absolute path to the refined clip on disk.
+     */
+    public function getRefinedAbsolutePath(): ?string
+    {
+        if (!$this->refined_path) {
+            return null;
+        }
+
+        return storage_path('app/' . $this->refined_path);
     }
 
     /**

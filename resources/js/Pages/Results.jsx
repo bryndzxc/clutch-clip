@@ -1,6 +1,7 @@
 import { Head } from '@inertiajs/react';
 import { useState, useEffect } from 'react';
 import DashboardHeader from '../Components/Dashboard/DashboardHeader';
+import ClipRefinementModal from '../Components/ClipRefinementModal';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -238,8 +239,12 @@ function NoClipsView() {
 
 const CLIP_DELAYS = ['animate-fade-up', 'animate-fade-up-1', 'animate-fade-up-2', 'animate-fade-up-3'];
 
-function ClipCard({ clip, index }) {
+function ClipCard({ clip, index, onEdit }) {
     const isTop = index === 0;
+    // Prefer refined clip URL for playback/download if available
+    const playUrl     = clip.refined_url ?? clip.url;
+    const downloadUrl = clip.refined_url ?? clip.url;
+
     return (
         <div className={[
             'bg-gray-900 border rounded-xl overflow-hidden group',
@@ -250,7 +255,7 @@ function ClipCard({ clip, index }) {
             {/* Player */}
             <div className="relative aspect-video bg-black">
                 <video
-                    src={clip.url}
+                    src={playUrl}
                     poster={clip.thumbnail_url ?? undefined}
                     controls
                     preload="metadata"
@@ -262,7 +267,12 @@ function ClipCard({ clip, index }) {
                         {isTop ? '⭐ #1' : `#${index + 1}`}
                     </span>
                 </div>
-                <div className="absolute top-2 right-2 pointer-events-none">
+                <div className="absolute top-2 right-2 pointer-events-none flex items-center gap-1.5">
+                    {clip.refined_url && (
+                        <span className="bg-violet-600/80 backdrop-blur-sm text-white text-xs font-semibold px-2 py-0.5 rounded-md">
+                            Refined
+                        </span>
+                    )}
                     <span className={`bg-black/60 backdrop-blur-sm text-xs font-mono font-semibold px-2 py-0.5 rounded-md border ${
                         isTop
                             ? 'text-violet-200 border-violet-500/50'
@@ -276,23 +286,39 @@ function ClipCard({ clip, index }) {
             {/* Info strip */}
             <div className="flex items-center justify-between px-4 py-3 border-t border-white/5">
                 <div>
-                    <p className="text-sm font-semibold text-white">Highlight #{index + 1}</p>
+                    <p className="text-sm font-semibold text-white">
+                        {clip.label || `Highlight #${index + 1}`}
+                    </p>
                     <p className="mt-0.5 text-xs text-gray-500">
                         {fmtTime(clip.start_time)} – {fmtTime(clip.end_time)}
                         <span className="ml-1.5 text-gray-700">· {clip.duration}s</span>
                     </p>
                 </div>
-                <a
-                    href={clip.url}
-                    download={`clutchclip_highlight_${index + 1}.mp4`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex items-center gap-1.5 text-xs font-medium text-gray-300 hover:text-violet-300 bg-gray-800 hover:bg-gray-800 border border-white/8 hover:border-violet-500/30 px-3 py-1.5 rounded-lg transition-all duration-200"
-                >
-                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                    </svg>
-                    Download
-                </a>
+                <div className="flex items-center gap-2">
+                    {/* Edit / Refine button */}
+                    <button
+                        onClick={() => onEdit(clip)}
+                        className="flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-violet-300 bg-gray-800 hover:bg-gray-800 border border-white/8 hover:border-violet-500/30 px-3 py-1.5 rounded-lg transition-all duration-200"
+                        title="Refine clip"
+                    >
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
+                        </svg>
+                        Refine
+                    </button>
+                    {/* Download button */}
+                    <a
+                        href={downloadUrl}
+                        download={`clutchclip_highlight_${index + 1}.mp4`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-1.5 text-xs font-medium text-gray-300 hover:text-violet-300 bg-gray-800 hover:bg-gray-800 border border-white/8 hover:border-violet-500/30 px-3 py-1.5 rounded-lg transition-all duration-200"
+                    >
+                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                        </svg>
+                        Download
+                    </a>
+                </div>
             </div>
         </div>
     );
@@ -343,9 +369,26 @@ function downloadAll(clips) {
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Results({ video, initialClips = [] }) {
-    const [status, setStatus]     = useState(video.status);
-    const [errorMsg, setErrorMsg] = useState(video.error_message ?? null);
-    const [clips, setClips]       = useState(initialClips);
+    const [status, setStatus]         = useState(video.status);
+    const [errorMsg, setErrorMsg]     = useState(video.error_message ?? null);
+    const [clips, setClips]           = useState(initialClips);
+    const [editingClip, setEditingClip] = useState(null);
+
+    function handleEditClip(clip) {
+        setEditingClip(clip);
+    }
+
+    function handleCloseModal() {
+        setEditingClip(null);
+    }
+
+    function handleRefineSaved(clipId, refinedData) {
+        setClips(prev => prev.map(c =>
+            c.id === clipId
+                ? { ...c, ...refinedData }
+                : c
+        ));
+    }
 
     const isTerminal = status === 'done' || status === 'failed';
 
@@ -477,7 +520,7 @@ export default function Results({ video, initialClips = [] }) {
                                     )}
                                 </div>
                                 {clips.map((clip, i) => (
-                                    <ClipCard key={clip.id} clip={clip} index={i} />
+                                    <ClipCard key={clip.id} clip={clip} index={i} onEdit={handleEditClip} />
                                 ))}
                             </div>
 
@@ -487,9 +530,21 @@ export default function Results({ video, initialClips = [] }) {
 
                                 <div className="bg-gray-900 border border-white/8 rounded-2xl p-5 space-y-2.5">
                                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Actions</h3>
+
+                                    {/* Montage editor entry point */}
+                                    <a
+                                        href={`/videos/${video.id}/montage/new`}
+                                        className="flex items-center justify-center gap-2 w-full rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold py-2.5 transition-all duration-200 shadow-lg shadow-violet-500/25 hover:shadow-violet-500/40 hover:-translate-y-px"
+                                    >
+                                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125M3.375 19.5h1.5C5.496 19.5 6 18.996 6 18.375m-3.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125 1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-1.5A1.125 1.125 0 0 1 18 18.375M20.625 4.5H3.375m17.25 0c.621 0 1.125.504 1.125 1.125M20.625 4.5h-1.5C18.504 4.5 18 5.004 18 5.625m3.75 0v1.5c0 .621-.504 1.125-1.125 1.125M3.375 4.5c-.621 0-1.125.504-1.125 1.125M3.375 4.5h1.5C5.496 4.5 6 5.004 6 5.625m-3.75 0v1.5c0 .621.504 1.125 1.125 1.125m0 0h1.5m-1.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m1.5-3.75C5.496 8.25 6 8.754 6 9.375v1.5m0-5.25v5.25m0-5.25C6 5.004 6.504 4.5 7.125 4.5h9.75c.621 0 1.125.504 1.125 1.125m1.125 2.625h1.5m-1.5 0A1.125 1.125 0 0 1 18 7.125v1.5m1.125-1.125c.621 0 1.125.504 1.125 1.125v1.5m-7.5-6v5.625m0 0v5.625M12 10.5h.008v.008H12V10.5Zm0 5.25h.008v.008H12v-.008Z" />
+                                        </svg>
+                                        Create Montage
+                                    </a>
+
                                     <a
                                         href="/upload"
-                                        className="flex items-center justify-center gap-2 w-full rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold py-2.5 transition-all duration-200 shadow-lg shadow-violet-500/25 hover:shadow-violet-500/40 hover:-translate-y-px"
+                                        className="flex items-center justify-center gap-2 w-full rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/8 text-gray-300 text-sm font-medium py-2.5 transition-colors"
                                     >
                                         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                                             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -522,6 +577,17 @@ export default function Results({ video, initialClips = [] }) {
 
                 </main>
             </div>
+
+            {/* ── Clip Refinement Modal ──────────────────────────────────── */}
+            {editingClip && (
+                <ClipRefinementModal
+                    clip={editingClip}
+                    index={clips.findIndex(c => c.id === editingClip.id)}
+                    videoId={video.id}
+                    onClose={handleCloseModal}
+                    onSaved={handleRefineSaved}
+                />
+            )}
         </>
     );
 }
