@@ -10,3 +10,27 @@
     --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
 }
+
+/* ── Keyframes ───────────────────────────────────────────────────────────────*/
+
+@keyframes fade-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scan-x {
+    0%   { transform: translateX(-120%); opacity: 0; }
+    15%  { opacity: 1; }
+    85%  { opacity: 1; }
+    100% { transform: translateX(220%); opacity: 0; }
+}
+
+/* ── Animation utilities ─────────────────────────────────────────────────────*/
+
+@layer utilities {
+    .animate-fade-up   { animation: fade-up 0.4s ease-out both; }
+    .animate-fade-up-1 { animation: fade-up 0.4s 0.07s ease-out both; }
+    .animate-fade-up-2 { animation: fade-up 0.4s 0.14s ease-out both; }
+    .animate-fade-up-3 { animation: fade-up 0.4s 0.21s ease-out both; }
+    .animate-scan-x    { animation: scan-x 2.6s ease-in-out infinite; }
+}

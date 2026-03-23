@@ -10,3 +10,6 @@ Artisan::command('inspire', function () {
 
 // Run temp/orphan cleanup every hour
 Schedule::command('clutchclip:cleanup')->hourly();
+
+// Delete clips that have exceeded each user's retention period (runs every 6 hours)
+Schedule::command('clutchclip:delete-expired-clips')->everySixHours();

@@ -6,6 +6,7 @@ use App\Jobs\ProcessVideoJob;
 use App\Models\Clip;
 use App\Models\Video;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
@@ -15,9 +16,27 @@ use Inertia\Response as InertiaResponse;
 
 class VideoController extends Controller
 {
+    public function landing(): InertiaResponse
+    {
+        return Inertia::render('Landing');
+    }
+
     public function index(): InertiaResponse
     {
-        return Inertia::render('Upload');
+        $recentVideos = Video::where('user_id', auth()->id())
+            ->latest('uploaded_at')
+            ->take(5)
+            ->get()
+            ->map(fn(Video $video) => [
+                'id'            => $video->id,
+                'original_name' => $video->original_name,
+                'status'        => $video->status,
+                'uploaded_at'   => $video->uploaded_at?->diffForHumans() ?? 'recently',
+            ]);
+
+        return Inertia::render('Upload', [
+            'recentVideos' => $recentVideos,
+        ]);
     }
 
     public function store(Request $request): JsonResponse
@@ -66,6 +85,7 @@ class VideoController extends Controller
 
         // ── Step 4: Persist record and queue processing ───────────────────────
         $video = Video::create([
+            'user_id'       => auth()->id(),
             'filename'      => $filename,
             'original_name' => $uploaded->getClientOriginalName(),
             'temp_path'     => $tempPath,
@@ -176,6 +196,7 @@ class VideoController extends Controller
         }
 
         $video = Video::create([
+            'user_id'       => auth()->id(),
             'filename'      => $filename,
             'original_name' => $originalName,
             'temp_path'     => $tempPath,
@@ -213,8 +234,59 @@ class VideoController extends Controller
         return is_numeric($output) ? (float) $output : null;
     }
 
+    public function history(): InertiaResponse
+    {
+        $videos = Video::where('user_id', auth()->id())
+            ->withCount('clips')
+            ->latest('uploaded_at')
+            ->get()
+            ->map(fn(Video $v) => [
+                'id'            => $v->id,
+                'original_name' => $v->original_name,
+                'status'        => $v->status,
+                'size'          => $v->size,
+                'duration'      => $v->duration,
+                'clips_count'   => $v->clips_count,
+                'uploaded_at'   => $v->uploaded_at?->diffForHumans(),
+                'processed_at'  => $v->processed_at?->diffForHumans(),
+            ]);
+
+        return Inertia::render('History', [
+            'videos' => $videos,
+        ]);
+    }
+
+    public function destroy(Video $video): RedirectResponse
+    {
+        abort_if(auth()->id() !== $video->user_id, 403);
+
+        // Delete clip files and thumbnails from disk
+        foreach ($video->clips as $clip) {
+            $clipPath = $clip->getAbsolutePath();
+            if (file_exists($clipPath)) {
+                @unlink($clipPath);
+            }
+            if ($clip->thumbnail_path) {
+                $thumbPath = storage_path('app/' . $clip->thumbnail_path);
+                if (file_exists($thumbPath)) {
+                    @unlink($thumbPath);
+                }
+            }
+        }
+
+        // Delete temp source file if still on disk
+        $video->deleteTempFile();
+
+        // Delete record — clips cascade via FK
+        $video->delete();
+
+        return redirect()->route('history');
+    }
+
     public function status(Video $video): JsonResponse
     {
+        abort_if(auth()->id() !== $video->user_id, 403);
+
         return response()->json([
             'id'            => $video->id,
             'status'        => $video->status,
@@ -226,6 +298,8 @@ class VideoController extends Controller
 
     public function clips(Video $video): JsonResponse
     {
+        abort_if(auth()->id() !== $video->user_id, 403);
+
         if ($video->status !== 'done') {
             return response()->json(['message' => 'Processing not complete'], 422);
         }
@@ -291,9 +365,35 @@ class VideoController extends Controller
 
     public function results(Video $video): InertiaResponse
     {
+        abort_if(auth()->id() !== $video->user_id, 403);
+
+        // Pre-load clips when already done — avoids a second round-trip
+        $initialClips = [];
+        if ($video->status === 'done') {
+            $initialClips = $video->clips->map(fn(Clip $clip) => [
+                'id'            => $clip->id,
+                'start_time'    => $clip->start_time,
+                'end_time'      => $clip->end_time,
+                'duration'      => $clip->duration,
+                'score'         => $clip->score,
+                'url'           => $clip->getUrl(),
+                'thumbnail_url' => $clip->getThumbnailUrl(),
+            ])->values()->all();
+        }
+
         return Inertia::render('Results', [
-            'videoId' => $video->id,
-            'status'  => $video->status,
+            'video' => [
+                'id'            => $video->id,
+                'original_name' => $video->original_name,
+                'status'        => $video->status,
+                'duration'      => $video->duration,
+                'size'          => $video->size,
+                'uploaded_at'   => $video->uploaded_at?->format('M j, Y g:i A'),
+                'processed_at'  => $video->processed_at?->diffForHumans(),
+                'error_message' => $video->error_message,
+                'clip_count'    => count($initialClips),
+            ],
+            'initialClips' => $initialClips,
         ]);
     }
 }

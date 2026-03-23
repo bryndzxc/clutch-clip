@@ -14,6 +14,32 @@ class User extends Authenticatable
     use HasFactory, Notifiable;
 
     /**
+     * Default processing preferences — merged with any per-user overrides.
+     * These values are passed to the Python processing script as CLI flags.
+     */
+    public const DEFAULT_SETTINGS = [
+        'clip_count'        => 5,     // max clips to generate
+        'pre_roll'          => 3,     // seconds before highlight peak
+        'post_roll'         => 3,     // seconds after highlight peak
+        'merge_gap'         => 5,     // gap (s) below which adjacent clips merge
+        'min_score'         => 50,    // minimum intensity score (0–100)
+        'output_quality'    => 'high',     // standard | high | smaller
+        'resolution'        => '1080p',    // 720p | 1080p
+        'aspect_ratio'      => 'original', // original | vertical
+        'auto_delete_hours' => 168,        // 24 | 48 | 168 (7 days)
+    ];
+
+    /**
+     * Return the user's effective settings, merged over the defaults.
+     *
+     * @return array<string, mixed>
+     */
+    public function getSettings(): array
+    {
+        return array_merge(self::DEFAULT_SETTINGS, $this->settings ?? []);
+    }
+
+    /**
      * The attributes that are mass assignable.
      *
      * @var list<string>
@@ -22,6 +48,9 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'google_id',
+        'avatar',
+        'settings',
     ];
 
     /**
@@ -43,7 +72,8 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
-            'password' => 'hashed',
+            'password'          => 'hashed',
+            'settings'          => 'array',
         ];
     }
 }

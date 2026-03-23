@@ -51,14 +51,28 @@ class ProcessVideoJob implements ShouldQueue
             Log::info("[ProcessVideoJob] Created thumbnails dir: {$thumbnailsDir}");
         }
 
+        // Load the user's processing preferences (falls back to defaults)
+        $settings = \App\Models\User::find($video->user_id)?->getSettings()
+            ?? \App\Models\User::DEFAULT_SETTINGS;
+
         // Run the Python highlight detection script
         $pythonScript = base_path('python/process_video.py');
         $command = sprintf(
-            'python %s --input %s --output-dir %s --thumbnails-dir %s',
+            'python %s --input %s --output-dir %s --thumbnails-dir %s'
+            . ' --clip-count %d --pre-roll %d --post-roll %d --merge-gap %d --min-score %d'
+            . ' --quality %s --resolution %s --aspect-ratio %s',
             escapeshellarg($pythonScript),
             escapeshellarg($videoPath),
             escapeshellarg($clipsDir),
-            escapeshellarg($thumbnailsDir)
+            escapeshellarg($thumbnailsDir),
+            (int) $settings['clip_count'],
+            (int) $settings['pre_roll'],
+            (int) $settings['post_roll'],
+            (int) $settings['merge_gap'],
+            (int) $settings['min_score'],
+            escapeshellarg($settings['output_quality']),
+            escapeshellarg($settings['resolution']),
+            escapeshellarg($settings['aspect_ratio']),
         );
 
         Log::info("[ProcessVideoJob] Running: {$command}");
