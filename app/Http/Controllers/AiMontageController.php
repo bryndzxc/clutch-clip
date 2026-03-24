@@ -56,6 +56,7 @@ class AiMontageController extends Controller
             'title_card'       => $draft['title_card'],
             'project_settings' => $draft['project_settings'],
             'status'           => 'pending',
+            'last_edited_at'   => now(),
         ]);
 
         return response()->json([

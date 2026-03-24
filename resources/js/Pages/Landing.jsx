@@ -1,4 +1,6 @@
 import { Head } from '@inertiajs/react';
+import { useState } from 'react';
+import AuthModal from '../Components/Auth/AuthModal';
 import Navbar from '../Components/Landing/Navbar';
 import Hero from '../Components/Landing/Hero';
 import AiMontage from '../Components/Landing/AiMontage';
@@ -11,23 +13,30 @@ import CTASection from '../Components/Landing/CTASection';
 import LandingFooter from '../Components/Landing/LandingFooter';
 
 export default function Landing() {
+    const [authModalMode, setAuthModalMode] = useState(null);
+
     return (
         <>
             <Head title="ClutchClip | AI Montage Generator" />
             <div className="min-h-screen bg-gray-950 text-white">
-                <Navbar />
+                <Navbar onOpenAuthModal={setAuthModalMode} />
                 <main>
-                    <Hero />
+                    <Hero onOpenAuthModal={setAuthModalMode} />
                     <AiMontage />
                     <HowItWorks />
                     <Features />
                     <ProductPreview />
                     <UseCases />
                     <FAQ />
-                    <CTASection />
+                    <CTASection onOpenAuthModal={setAuthModalMode} />
                 </main>
-                <LandingFooter />
+                <LandingFooter onOpenAuthModal={setAuthModalMode} />
             </div>
+            <AuthModal
+                mode={authModalMode ?? 'login'}
+                open={Boolean(authModalMode)}
+                onClose={() => setAuthModalMode(null)}
+            />
         </>
     );
 }

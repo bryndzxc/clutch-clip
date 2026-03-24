@@ -1,9 +1,9 @@
 import { usePage } from '@inertiajs/react';
 import { GlassPanel } from './LandingPrimitives';
 
-export default function CTASection() {
+export default function CTASection({ onOpenAuthModal }) {
     const { auth } = usePage().props;
-    const primaryCtaHref = auth.user ? '/upload' : '/register';
+    const primaryCtaHref = auth.user ? '/upload' : null;
 
     return (
         <section className="px-6 py-24 md:py-32">
@@ -21,12 +21,22 @@ export default function CTASection() {
                             Upload gameplay, let the AI build the first cut, and export a share-ready montage in minutes.
                         </p>
                         <div className="mt-8 flex justify-center">
-                            <a
-                                href={primaryCtaHref}
-                                className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-violet-600 to-indigo-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_16px_50px_rgba(124,58,237,0.35)] transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_20px_60px_rgba(124,58,237,0.45)]"
-                            >
-                                Generate Montage &mdash; Free
-                            </a>
+                            {auth.user ? (
+                                <a
+                                    href={primaryCtaHref}
+                                    className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-violet-600 to-indigo-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_16px_50px_rgba(124,58,237,0.35)] transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_20px_60px_rgba(124,58,237,0.45)]"
+                                >
+                                    Generate Montage &mdash; Free
+                                </a>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={() => onOpenAuthModal?.('register')}
+                                    className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-violet-600 to-indigo-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_16px_50px_rgba(124,58,237,0.35)] transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_20px_60px_rgba(124,58,237,0.45)]"
+                                >
+                                    Generate Montage &mdash; Free
+                                </button>
+                            )}
                         </div>
                     </div>
                 </GlassPanel>

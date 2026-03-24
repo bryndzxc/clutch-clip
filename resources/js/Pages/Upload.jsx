@@ -1,6 +1,7 @@
 import { Head, router } from '@inertiajs/react';
 import { useState, useRef } from 'react';
 import DashboardHeader from '../Components/Dashboard/DashboardHeader';
+import ResumeProjectsPanel from '../Components/Projects/ResumeProjectsPanel';
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 function StatusBadge({ status }) {
@@ -75,7 +76,7 @@ const TIPS = [
 ];
 
 // ─── Main page ────────────────────────────────────────────────────────────────
-export default function Upload({ recentVideos = [] }) {
+export default function Upload({ recentVideos = [], recentProjects = [] }) {
     const [file, setFile]               = useState(null);
     const [dragActive, setDrag]         = useState(false);
     const [uploading, setUploading]     = useState(false);
@@ -366,6 +367,14 @@ export default function Upload({ recentVideos = [] }) {
 
                         {/* ── Right sidebar ───────────────────────────────── */}
                         <div className="space-y-4">
+
+                            <ResumeProjectsPanel
+                                title="Resume editing"
+                                subtitle="Jump back into your latest saved montage drafts without hunting through old sessions."
+                                projects={recentProjects}
+                                emptyTitle="No saved montage drafts"
+                                emptyDescription="Start editing a montage and autosave will keep it ready to resume here."
+                            />
 
                             {/* Workflow steps */}
                             <div className="bg-gray-900 border border-white/8 rounded-2xl p-6 transition-all duration-200 hover:border-white/[0.13]">

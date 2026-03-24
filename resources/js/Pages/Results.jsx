@@ -2,6 +2,7 @@ import { Head, router } from '@inertiajs/react';
 import { useState, useEffect } from 'react';
 import DashboardHeader from '../Components/Dashboard/DashboardHeader';
 import ClipRefinementModal from '../Components/ClipRefinementModal';
+import ResumeProjectsPanel from '../Components/Projects/ResumeProjectsPanel';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -522,7 +523,7 @@ function AiMontagePanel({ videoId }) {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export default function Results({ video, initialClips = [] }) {
+export default function Results({ video, initialClips = [], relatedProjects = [] }) {
     const [status, setStatus]         = useState(video.status);
     const [errorMsg, setErrorMsg]     = useState(video.error_message ?? null);
     const [clips, setClips]           = useState(initialClips);
@@ -593,7 +594,7 @@ export default function Results({ video, initialClips = [] }) {
             <Head title={pageTitle} />
             <div className="min-h-screen bg-gray-950 text-white">
 
-                <DashboardHeader active="results" />
+                <DashboardHeader active="history" />
 
                 <main className="mx-auto max-w-7xl px-4 sm:px-6 py-8 pb-24 md:pb-16">
 
@@ -681,6 +682,14 @@ export default function Results({ video, initialClips = [] }) {
                             {/* Sidebar */}
                             <div className="space-y-4">
                                 <JobSummary video={video} clipCount={clips.length} />
+
+                                <ResumeProjectsPanel
+                                    title="Projects for this video"
+                                    subtitle="Open an existing draft for this session or start a fresh edit if you want a new montage."
+                                    projects={relatedProjects}
+                                    emptyTitle="No saved projects for this video"
+                                    emptyDescription="Create a montage once and it will stay available here to resume later."
+                                />
 
                                 <div className="bg-gray-900 border border-white/8 rounded-2xl p-5 space-y-2.5">
                                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Actions</h3>

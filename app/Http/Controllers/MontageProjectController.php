@@ -15,6 +15,25 @@ use Inertia\Response as InertiaResponse;
 
 class MontageProjectController extends Controller
 {
+    public function index(): InertiaResponse
+    {
+        $projects = MontageProject::query()
+            ->where('user_id', auth()->id())
+            ->with('video')
+            ->withCount('montages')
+            ->orderByRaw("CASE WHEN status = 'pending' THEN 0 ELSE 1 END")
+            ->orderByDesc('last_edited_at')
+            ->orderByDesc('updated_at')
+            ->get()
+            ->map(fn (MontageProject $project) => $this->projectListPayload($project))
+            ->values()
+            ->all();
+
+        return Inertia::render('MontageProjects/Index', [
+            'projects' => $projects,
+        ]);
+    }
+
     public function create(Video $video): InertiaResponse
     {
         abort_if(auth()->id() !== $video->user_id, 403);
@@ -42,60 +61,17 @@ class MontageProjectController extends Controller
 
     public function store(Request $request): JsonResponse
     {
-        $data = $request->validate([
-            'video_id'                                          => ['required', 'integer', 'exists:videos,id'],
-            'title'                                             => ['nullable', 'string', 'max:160'],
-            'clip_order'                                        => ['nullable', 'array'],
-            'clip_order.*'                                      => ['integer'],
-            'clip_settings'                                     => ['nullable', 'array'],
-            'clip_settings.*.effects'                           => ['nullable', 'array'],
-            'clip_settings.*.effects.*.type'                    => ['required', 'string', 'in:flash,zoom-hit,glitch,shake,blur-whip,slow-mo,fire,neon-glow,speed-up,rgb-split'],
-            'clip_settings.*.effects.*.start_time'              => ['required', 'numeric', 'min:0'],
-            'clip_settings.*.effects.*.end_time'                => ['required', 'numeric', 'min:0'],
-            'clip_settings.*.effects.*.intensity'               => ['nullable', 'numeric', 'min:0', 'max:1'],
-            'title_card'                                        => ['nullable', 'array'],
-            'title_card.enabled'                                => ['boolean'],
-            'title_card.text'                                   => ['nullable', 'string', 'max:80'],
-            'title_card.subtitle'                               => ['nullable', 'string', 'max:80'],
-            'title_card.duration'                               => ['nullable', 'integer', 'min:1', 'max:10'],
-            'title_card.bg_style'                               => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
-            'title_card.animation'                              => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
-            'title_card.template_id'                            => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
-            'project_settings'                                  => ['nullable', 'array'],
-            'project_settings.outro_card'                       => ['nullable', 'array'],
-            'project_settings.outro_card.enabled'               => ['boolean'],
-            'project_settings.outro_card.text'                  => ['nullable', 'string', 'max:80'],
-            'project_settings.outro_card.subtitle'              => ['nullable', 'string', 'max:80'],
-            'project_settings.outro_card.duration'              => ['nullable', 'integer', 'min:1', 'max:10'],
-            'project_settings.outro_card.bg_style'              => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
-            'project_settings.outro_card.animation'             => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
-            'project_settings.outro_card.template_id'           => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
-            'project_settings.aspect_ratio'                     => ['nullable', 'string', 'in:original,16:9,9:16,1:1'],
-            'project_settings.quality'                          => ['nullable', 'string', 'in:standard,high,smaller'],
-            'project_settings.music'                            => ['nullable', 'array'],
-            'project_settings.music.track_id'                   => ['nullable', 'string', 'max:60'],
-            'project_settings.music.volume'                     => ['nullable', 'numeric', 'min:0', 'max:1'],
-            'project_settings.music.trim_start'                 => ['nullable', 'numeric', 'min:0'],
-            'project_settings.music.fade_in'                    => ['nullable', 'numeric', 'min:0', 'max:30'],
-            'project_settings.music.fade_out'                   => ['nullable', 'numeric', 'min:0', 'max:30'],
-            'project_settings.music.loop'                       => ['nullable', 'boolean'],
-            'project_settings.music.duck_clips'                 => ['nullable', 'boolean'],
-            'project_settings.music.mute_clips_globally'        => ['nullable', 'boolean'],
-        ]);
+        $data = $this->validateProjectPayload($request, true);
 
         $video = Video::findOrFail($data['video_id']);
         abort_if(auth()->id() !== $video->user_id, 403);
 
-        $project = MontageProject::create([
-            'user_id'          => auth()->id(),
-            'video_id'         => $data['video_id'],
-            'title'            => $data['title'] ?? 'My Montage',
-            'clip_order'       => $data['clip_order'] ?? [],
-            'clip_settings'    => $data['clip_settings'] ?? [],
-            'title_card'       => $data['title_card'] ?? $this->defaultTitleCard(),
-            'project_settings' => $data['project_settings'] ?? $this->defaultProjectSettings(),
-            'status'           => 'pending',
+        $project = new MontageProject([
+            'user_id'  => auth()->id(),
+            'video_id' => $data['video_id'],
         ]);
+        $this->fillProjectFromData($project, $data);
+        $project->save();
 
         return response()->json(['project' => $this->projectPayload($project)], 201);
     }
@@ -105,55 +81,9 @@ class MontageProjectController extends Controller
         abort_if(auth()->id() !== $project->user_id, 403);
         abort_if($project->isExporting(), 422, 'Cannot edit while export is in progress.');
 
-        $data = $request->validate([
-            'title'                                             => ['nullable', 'string', 'max:160'],
-            'clip_order'                                        => ['nullable', 'array'],
-            'clip_order.*'                                      => ['integer'],
-            'clip_settings'                                     => ['nullable', 'array'],
-            'clip_settings.*.effects'                           => ['nullable', 'array'],
-            'clip_settings.*.effects.*.type'                    => ['required', 'string', 'in:flash,zoom-hit,glitch,shake,blur-whip,slow-mo,fire,neon-glow,speed-up,rgb-split'],
-            'clip_settings.*.effects.*.start_time'              => ['required', 'numeric', 'min:0'],
-            'clip_settings.*.effects.*.end_time'                => ['required', 'numeric', 'min:0'],
-            'clip_settings.*.effects.*.intensity'               => ['nullable', 'numeric', 'min:0', 'max:1'],
-            'title_card'                                        => ['nullable', 'array'],
-            'title_card.enabled'                                => ['boolean'],
-            'title_card.text'                                   => ['nullable', 'string', 'max:80'],
-            'title_card.subtitle'                               => ['nullable', 'string', 'max:80'],
-            'title_card.duration'                               => ['nullable', 'integer', 'min:1', 'max:10'],
-            'title_card.bg_style'                               => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
-            'title_card.animation'                              => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
-            'title_card.template_id'                            => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
-            'project_settings'                                  => ['nullable', 'array'],
-            'project_settings.outro_card'                       => ['nullable', 'array'],
-            'project_settings.outro_card.enabled'               => ['boolean'],
-            'project_settings.outro_card.text'                  => ['nullable', 'string', 'max:80'],
-            'project_settings.outro_card.subtitle'              => ['nullable', 'string', 'max:80'],
-            'project_settings.outro_card.duration'              => ['nullable', 'integer', 'min:1', 'max:10'],
-            'project_settings.outro_card.bg_style'              => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
-            'project_settings.outro_card.animation'             => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
-            'project_settings.outro_card.template_id'           => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
-            'project_settings.aspect_ratio'                     => ['nullable', 'string', 'in:original,16:9,9:16,1:1'],
-            'project_settings.quality'                          => ['nullable', 'string', 'in:standard,high,smaller'],
-            'project_settings.music'                            => ['nullable', 'array'],
-            'project_settings.music.track_id'                   => ['nullable', 'string', 'max:60'],
-            'project_settings.music.volume'                     => ['nullable', 'numeric', 'min:0', 'max:1'],
-            'project_settings.music.trim_start'                 => ['nullable', 'numeric', 'min:0'],
-            'project_settings.music.fade_in'                    => ['nullable', 'numeric', 'min:0', 'max:30'],
-            'project_settings.music.fade_out'                   => ['nullable', 'numeric', 'min:0', 'max:30'],
-            'project_settings.music.loop'                       => ['nullable', 'boolean'],
-            'project_settings.music.duck_clips'                 => ['nullable', 'boolean'],
-            'project_settings.music.mute_clips_globally'        => ['nullable', 'boolean'],
-        ]);
-
-        $project->update([
-            'title'            => $data['title']            ?? $project->title,
-            'clip_order'       => $data['clip_order']       ?? $project->clip_order,
-            'clip_settings'    => $data['clip_settings']    ?? $project->clip_settings,
-            'title_card'       => $data['title_card']       ?? $project->title_card,
-            'project_settings' => $data['project_settings'] ?? $project->project_settings,
-            'status'           => 'pending',
-            'error_message'    => null,
-        ]);
+        $data = $this->validateProjectPayload($request);
+        $this->fillProjectFromData($project, $data);
+        $project->save();
 
         return response()->json(['project' => $this->projectPayload($project->refresh())]);
     }
@@ -300,8 +230,9 @@ class MontageProjectController extends Controller
 
         $path = $request->file('music_file')->store("music/project_{$project->id}", 'local');
 
-        $currentSettings          = $project->project_settings ?? $this->defaultProjectSettings();
+        $currentSettings          = $this->normalizedProjectSettings($project->project_settings);
         $currentSettings['music'] = array_merge(
+            $this->defaultProjectSettings()['music'],
             $currentSettings['music'] ?? [],
             [
                 'file_path'     => $path,
@@ -309,7 +240,10 @@ class MontageProjectController extends Controller
             ]
         );
 
-        $project->update(['project_settings' => $currentSettings]);
+        $project->update([
+            'project_settings' => $currentSettings,
+            'last_edited_at'   => now(),
+        ]);
 
         return response()->json(['music' => $currentSettings['music']]);
     }
@@ -324,13 +258,17 @@ class MontageProjectController extends Controller
             Storage::disk('local')->delete($path);
         }
 
-        $currentSettings          = $project->project_settings ?? $this->defaultProjectSettings();
+        $currentSettings          = $this->normalizedProjectSettings($project->project_settings);
         $currentSettings['music'] = array_merge(
+            $this->defaultProjectSettings()['music'],
             $currentSettings['music'] ?? [],
             ['file_path' => null, 'original_name' => null]
         );
 
-        $project->update(['project_settings' => $currentSettings]);
+        $project->update([
+            'project_settings' => $currentSettings,
+            'last_edited_at'   => now(),
+        ]);
 
         return response()->json(['music' => $currentSettings['music']]);
     }
@@ -361,6 +299,85 @@ class MontageProjectController extends Controller
                 'mute_clips_globally' => false,
             ],
         ];
+    }
+
+    private function validateProjectPayload(Request $request, bool $requireVideoId = false): array
+    {
+        $rules = [
+            'title'                                             => ['nullable', 'string', 'max:160'],
+            'clip_order'                                        => ['nullable', 'array'],
+            'clip_order.*'                                      => ['integer'],
+            'clip_settings'                                     => ['nullable', 'array'],
+            'clip_settings.*.effects'                           => ['nullable', 'array'],
+            'clip_settings.*.effects.*.type'                    => ['required', 'string', 'in:flash,zoom-hit,glitch,shake,blur-whip,slow-mo,fire,neon-glow,speed-up,rgb-split'],
+            'clip_settings.*.effects.*.start_time'              => ['required', 'numeric', 'min:0'],
+            'clip_settings.*.effects.*.end_time'                => ['required', 'numeric', 'min:0'],
+            'clip_settings.*.effects.*.intensity'               => ['nullable', 'numeric', 'min:0', 'max:1'],
+            'title_card'                                        => ['nullable', 'array'],
+            'title_card.enabled'                                => ['boolean'],
+            'title_card.text'                                   => ['nullable', 'string', 'max:80'],
+            'title_card.subtitle'                               => ['nullable', 'string', 'max:80'],
+            'title_card.duration'                               => ['nullable', 'integer', 'min:1', 'max:10'],
+            'title_card.bg_style'                               => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
+            'title_card.animation'                              => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
+            'title_card.template_id'                            => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
+            'project_settings'                                  => ['nullable', 'array'],
+            'project_settings.outro_card'                       => ['nullable', 'array'],
+            'project_settings.outro_card.enabled'               => ['boolean'],
+            'project_settings.outro_card.text'                  => ['nullable', 'string', 'max:80'],
+            'project_settings.outro_card.subtitle'              => ['nullable', 'string', 'max:80'],
+            'project_settings.outro_card.duration'              => ['nullable', 'integer', 'min:1', 'max:10'],
+            'project_settings.outro_card.bg_style'              => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
+            'project_settings.outro_card.animation'             => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
+            'project_settings.outro_card.template_id'           => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
+            'project_settings.aspect_ratio'                     => ['nullable', 'string', 'in:original,16:9,9:16,1:1'],
+            'project_settings.quality'                          => ['nullable', 'string', 'in:standard,high,smaller'],
+            'project_settings.music'                            => ['nullable', 'array'],
+            'project_settings.music.track_id'                   => ['nullable', 'string', 'max:60'],
+            'project_settings.music.volume'                     => ['nullable', 'numeric', 'min:0', 'max:1'],
+            'project_settings.music.trim_start'                 => ['nullable', 'numeric', 'min:0'],
+            'project_settings.music.fade_in'                    => ['nullable', 'numeric', 'min:0', 'max:30'],
+            'project_settings.music.fade_out'                   => ['nullable', 'numeric', 'min:0', 'max:30'],
+            'project_settings.music.loop'                       => ['nullable', 'boolean'],
+            'project_settings.music.duck_clips'                 => ['nullable', 'boolean'],
+            'project_settings.music.mute_clips_globally'        => ['nullable', 'boolean'],
+        ];
+
+        if ($requireVideoId) {
+            $rules = ['video_id' => ['required', 'integer', 'exists:videos,id']] + $rules;
+        }
+
+        return $request->validate($rules);
+    }
+
+    private function fillProjectFromData(MontageProject $project, array $data): void
+    {
+        $project->fill([
+            'title'            => $data['title'] ?? $project->title ?? 'My Montage',
+            'clip_order'       => array_values($data['clip_order'] ?? $project->clip_order ?? []),
+            'clip_settings'    => $data['clip_settings'] ?? $project->clip_settings ?? [],
+            'title_card'       => $this->normalizedTitleCard($data['title_card'] ?? $project->title_card),
+            'project_settings' => $this->normalizedProjectSettings($data['project_settings'] ?? $project->project_settings),
+            'status'           => 'pending',
+            'last_edited_at'   => now(),
+            'error_message'    => null,
+        ]);
+    }
+
+    private function normalizedTitleCard(?array $titleCard): array
+    {
+        return array_merge($this->defaultTitleCard(), is_array($titleCard) ? $titleCard : []);
+    }
+
+    private function normalizedProjectSettings(?array $projectSettings): array
+    {
+        $defaults = $this->defaultProjectSettings();
+        $projectSettings = is_array($projectSettings) ? $projectSettings : [];
+        $settings = array_merge($defaults, $projectSettings);
+        $settings['outro_card'] = array_merge($defaults['outro_card'], is_array($projectSettings['outro_card'] ?? null) ? $projectSettings['outro_card'] : []);
+        $settings['music'] = array_merge($defaults['music'], is_array($projectSettings['music'] ?? null) ? $projectSettings['music'] : []);
+
+        return $settings;
     }
 
     private function videoPayload(Video $video): array
@@ -394,11 +411,35 @@ class MontageProjectController extends Controller
             'title'            => $project->title,
             'clip_order'       => $project->clip_order       ?? [],
             'clip_settings'    => $project->clip_settings    ?? [],
-            'title_card'       => $project->title_card       ?? $this->defaultTitleCard(),
-            'project_settings' => $project->project_settings ?? $this->defaultProjectSettings(),
+            'title_card'       => $this->normalizedTitleCard($project->title_card),
+            'project_settings' => $this->normalizedProjectSettings($project->project_settings),
             'status'           => $this->normalizedProjectStatus($project->status),
             'output_url'       => $project->getOutputUrl(),
             'error_message'    => $project->error_message,
+            'last_edited_at'   => optional($project->last_edited_at)->toIso8601String(),
+            'created_at'       => optional($project->created_at)->toIso8601String(),
+            'updated_at'       => optional($project->updated_at)->toIso8601String(),
+        ];
+    }
+
+    private function projectListPayload(MontageProject $project): array
+    {
+        $normalizedStatus = $this->normalizedProjectStatus($project->status);
+        $clipOrder = is_array($project->clip_order) ? $project->clip_order : [];
+
+        return [
+            'id'               => $project->id,
+            'title'            => $project->title,
+            'status'           => $normalizedStatus,
+            'is_draft'         => $normalizedStatus === 'pending',
+            'video_id'         => $project->video_id,
+            'video_name'       => $project->video?->original_name,
+            'clip_count'       => count($clipOrder),
+            'montages_count'   => $project->montages_count ?? 0,
+            'last_edited_at'   => optional($project->last_edited_at)->toIso8601String(),
+            'created_at'       => optional($project->created_at)->toIso8601String(),
+            'updated_at'       => optional($project->updated_at)->toIso8601String(),
+            'resume_url'       => route('montage-projects.show', $project),
         ];
     }
 

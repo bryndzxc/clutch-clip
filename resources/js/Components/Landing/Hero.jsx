@@ -7,9 +7,9 @@ const previewClips = [
     { title: 'Triple spray', tag: 'Zoom impact', duration: '00:12', tone: 'from-cyan-500/25 to-indigo-500/10' },
 ];
 
-export default function Hero() {
+export default function Hero({ onOpenAuthModal }) {
     const { auth } = usePage().props;
-    const primaryCtaHref = auth.user ? '/upload' : '/register';
+    const primaryCtaHref = auth.user ? '/upload' : null;
 
     return (
         <section className="relative overflow-hidden px-6 pb-24 pt-32 md:pb-32 md:pt-40">
@@ -40,12 +40,22 @@ export default function Hero() {
                     </p>
 
                     <div className="mt-10 flex flex-col items-start gap-4 sm:flex-row sm:items-center">
-                        <a
-                            href={primaryCtaHref}
-                            className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-violet-600 to-indigo-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_16px_50px_rgba(124,58,237,0.35)] transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_20px_60px_rgba(124,58,237,0.45)]"
-                        >
-                            Generate Montage &mdash; Free
-                        </a>
+                        {auth.user ? (
+                            <a
+                                href={primaryCtaHref}
+                                className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-violet-600 to-indigo-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_16px_50px_rgba(124,58,237,0.35)] transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_20px_60px_rgba(124,58,237,0.45)]"
+                            >
+                                Generate Montage &mdash; Free
+                            </a>
+                        ) : (
+                            <button
+                                type="button"
+                                onClick={() => onOpenAuthModal?.('register')}
+                                className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-violet-500 via-violet-600 to-indigo-600 px-7 py-3.5 text-sm font-semibold text-white shadow-[0_16px_50px_rgba(124,58,237,0.35)] transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:shadow-[0_20px_60px_rgba(124,58,237,0.45)]"
+                            >
+                                Generate Montage &mdash; Free
+                            </button>
+                        )}
                         <a
                             href="#editor-preview"
                             className="inline-flex items-center gap-2 rounded-2xl border border-white/12 bg-white/5 px-6 py-3.5 text-sm font-medium text-slate-100 transition-all duration-300 hover:border-violet-400/30 hover:bg-white/8 hover:text-white"

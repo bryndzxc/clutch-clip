@@ -1,8 +1,8 @@
 import { usePage } from '@inertiajs/react';
 
-export default function LandingFooter() {
+export default function LandingFooter({ onOpenAuthModal }) {
     const { auth } = usePage().props;
-    const primaryCtaHref = auth.user ? '/upload' : '/register';
+    const primaryCtaHref = auth.user ? '/upload' : null;
 
     return (
         <footer className="border-t border-white/8 px-6 py-12">
@@ -25,9 +25,19 @@ export default function LandingFooter() {
                     <a href="#faq" className="text-sm text-slate-400 transition-colors hover:text-white">
                         FAQ
                     </a>
-                    <a href={primaryCtaHref} className="text-sm text-slate-400 transition-colors hover:text-white">
-                        Try Free
-                    </a>
+                    {auth.user ? (
+                        <a href={primaryCtaHref} className="text-sm text-slate-400 transition-colors hover:text-white">
+                            Try Free
+                        </a>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={() => onOpenAuthModal?.('register')}
+                            className="text-sm text-slate-400 transition-colors hover:text-white"
+                        >
+                            Try Free
+                        </button>
+                    )}
                 </nav>
 
                 <p className="text-xs text-slate-500">&copy; {new Date().getFullYear()} ClutchClip. All rights reserved.</p>

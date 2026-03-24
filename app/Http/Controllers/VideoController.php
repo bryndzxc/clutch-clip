@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Jobs\ProcessVideoJob;
 use App\Models\Clip;
+use App\Models\MontageProject;
 use App\Models\Video;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -36,6 +37,7 @@ class VideoController extends Controller
 
         return Inertia::render('Upload', [
             'recentVideos' => $recentVideos,
+            'recentProjects' => $this->recentMontageProjectsPayload(limit: 4),
         ]);
     }
 
@@ -253,6 +255,7 @@ class VideoController extends Controller
 
         return Inertia::render('History', [
             'videos' => $videos,
+            'recentProjects' => $this->recentMontageProjectsPayload(limit: 3),
         ]);
     }
 
@@ -394,6 +397,48 @@ class VideoController extends Controller
                 'clip_count'    => count($initialClips),
             ],
             'initialClips' => $initialClips,
+            'relatedProjects' => $this->recentMontageProjectsPayload(videoId: $video->id, limit: 3),
         ]);
+    }
+
+    private function recentMontageProjectsPayload(?int $videoId = null, int $limit = 4): array
+    {
+        $query = MontageProject::query()
+            ->where('user_id', auth()->id())
+            ->with('video')
+            ->withCount('montages')
+            ->orderByRaw("CASE WHEN status = 'pending' THEN 0 ELSE 1 END")
+            ->orderByDesc('last_edited_at')
+            ->orderByDesc('updated_at');
+
+        if ($videoId !== null) {
+            $query->where('video_id', $videoId);
+        }
+
+        return $query
+            ->limit($limit)
+            ->get()
+            ->map(fn (MontageProject $project) => [
+                'id'             => $project->id,
+                'title'          => $project->title,
+                'status'         => $this->normalizedProjectStatus($project->status),
+                'is_draft'       => $this->normalizedProjectStatus($project->status) === 'pending',
+                'video_name'     => $project->video?->original_name,
+                'clip_count'     => count(is_array($project->clip_order) ? $project->clip_order : []),
+                'montages_count' => $project->montages_count ?? 0,
+                'last_edited_at' => $project->last_edited_at?->toIso8601String(),
+                'resume_url'     => route('montage-projects.show', $project),
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function normalizedProjectStatus(?string $status): ?string
+    {
+        return match ($status) {
+            'queued', 'processing' => 'rendering',
+            'done'                 => 'completed',
+            default                => $status,
+        };
     }
 }

@@ -49,6 +49,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/videos/{video}/montage/new', [MontageProjectController::class, 'create'])->name('montage-projects.create');
     Route::post('/videos/{video}/ai-montage', [AiMontageController::class, 'generate'])->name('ai-montage.generate');
 
+    Route::get('/montage-projects', [MontageProjectController::class, 'index'])->name('montage-projects.index');
     Route::post('/montage-projects', [MontageProjectController::class, 'store'])->name('montage-projects.store');
     Route::get('/montage-projects/{project}', [MontageProjectController::class, 'show'])->name('montage-projects.show');
     Route::put('/montage-projects/{project}', [MontageProjectController::class, 'update'])->name('montage-projects.update');

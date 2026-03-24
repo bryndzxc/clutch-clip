@@ -1,6 +1,6 @@
 import { router, usePage } from '@inertiajs/react';
 
-export default function Navbar() {
+export default function Navbar({ onOpenAuthModal }) {
     const { auth } = usePage().props;
 
     function handleLogout(event) {
@@ -52,15 +52,20 @@ export default function Navbar() {
                     </div>
                 ) : (
                     <div className="flex items-center gap-3">
-                        <a href="/login" className="text-sm text-slate-300 transition-colors hover:text-white">
+                        <button
+                            type="button"
+                            onClick={() => onOpenAuthModal?.('login')}
+                            className="text-sm text-slate-300 transition-colors hover:text-white"
+                        >
                             Sign in
-                        </a>
-                        <a
-                            href="/register"
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => onOpenAuthModal?.('register')}
                             className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-violet-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-[0_12px_30px_rgba(124,58,237,0.25)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_16px_36px_rgba(124,58,237,0.35)]"
                         >
                             Try Free
-                        </a>
+                        </button>
                     </div>
                 )}
             </div>

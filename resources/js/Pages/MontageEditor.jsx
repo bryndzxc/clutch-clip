@@ -128,6 +128,167 @@ function defaultClipSettings(clip) {
     };
 }
 
+function defaultTitleCard() {
+    return {
+        enabled: false,
+        text: '',
+        subtitle: '',
+        duration: 3,
+        bg_style: 'clean-fade',
+        animation: 'fade',
+        template_id: null,
+    };
+}
+
+function defaultProjectSettings() {
+    return {
+        outro_card: {
+            enabled: false,
+            text: '',
+            subtitle: '',
+            duration: 3,
+            bg_style: 'clean-fade',
+            animation: 'fade',
+            template_id: null,
+        },
+        aspect_ratio: 'original',
+        quality: 'high',
+        music: {
+            track_id: null,
+            file_path: null,
+            original_name: null,
+            volume: 0.5,
+            trim_start: 0,
+            fade_in: 0,
+            fade_out: 2,
+            loop: false,
+            duck_clips: false,
+            mute_clips_globally: false,
+        },
+    };
+}
+
+function normalizeClipSettings(clip, settings = {}) {
+    const defaults = defaultClipSettings(clip);
+
+    return {
+        ...defaults,
+        ...settings,
+        text_overlay: {
+            ...defaults.text_overlay,
+            ...(settings?.text_overlay ?? {}),
+        },
+        transition: {
+            ...defaults.transition,
+            ...(settings?.transition ?? {}),
+        },
+        effects: Array.isArray(settings?.effects) ? settings.effects : [],
+    };
+}
+
+function hydrateProjectState(project, clips) {
+    const clipsMap = Object.fromEntries(clips.map((clip) => [Number(clip.id), clip]));
+    const seenClipIds = new Set();
+    const orderedClipIds = (Array.isArray(project?.clip_order) ? project.clip_order : [])
+        .map((clipId) => Number(clipId))
+        .filter((clipId) => (
+            Number.isFinite(clipId)
+            && clipsMap[clipId]
+            && !seenClipIds.has(clipId)
+            && (seenClipIds.add(clipId), true)
+        ));
+
+    const rawClipSettings = project?.clip_settings && typeof project.clip_settings === 'object'
+        ? project.clip_settings
+        : {};
+
+    const clipSettings = {};
+
+    Object.entries(rawClipSettings).forEach(([clipId, settings]) => {
+        const numericClipId = Number(clipId);
+        if (!Number.isFinite(numericClipId) || !clipsMap[numericClipId]) return;
+        clipSettings[numericClipId] = normalizeClipSettings(clipsMap[numericClipId], settings);
+    });
+
+    orderedClipIds.forEach((clipId) => {
+        if (!clipSettings[clipId]) {
+            clipSettings[clipId] = defaultClipSettings(clipsMap[clipId]);
+        }
+    });
+
+    const defaultSettings = defaultProjectSettings();
+
+    return {
+        projectId: project?.id ?? null,
+        projectTitle: project?.title ?? 'My Montage',
+        orderedClipIds,
+        clipSettings,
+        titleCard: {
+            ...defaultTitleCard(),
+            ...(project?.title_card ?? {}),
+        },
+        projectSettings: {
+            ...defaultSettings,
+            ...(project?.project_settings ?? {}),
+            outro_card: {
+                ...defaultSettings.outro_card,
+                ...(project?.project_settings?.outro_card ?? {}),
+            },
+            music: {
+                ...defaultSettings.music,
+                ...(project?.project_settings?.music ?? {}),
+            },
+        },
+        exportStatus: project?.status ?? null,
+        outputUrl: project?.output_url ?? null,
+        errorMessage: project?.error_message ?? null,
+        lastSavedAt: project?.last_edited_at ?? project?.updated_at ?? null,
+    };
+}
+
+function buildProjectPayload(videoId, state) {
+    return {
+        video_id: videoId,
+        title: state.projectTitle,
+        clip_order: state.orderedClipIds,
+        clip_settings: state.clipSettings,
+        title_card: state.titleCard,
+        project_settings: state.projectSettings,
+    };
+}
+
+function getSaveIndicator(saveState, lastSavedAt, hasProject, saveError) {
+    if (saveState === 'saving') {
+        return { label: 'Saving...', detail: 'Syncing project changes to the server.', className: 'text-violet-300' };
+    }
+
+    if (saveState === 'error') {
+        return { label: 'Save failed', detail: saveError ?? 'Project changes could not be saved.', className: 'text-red-400' };
+    }
+
+    if (lastSavedAt) {
+        const savedAt = new Date(lastSavedAt);
+        if (!Number.isNaN(savedAt.getTime())) {
+            const diffMs = Math.abs(Date.now() - savedAt.getTime());
+            if (diffMs < 15000) {
+                return { label: 'Saved just now', detail: savedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), className: 'text-emerald-400' };
+            }
+
+            return {
+                label: 'Saved',
+                detail: savedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+                className: 'text-emerald-400',
+            };
+        }
+    }
+
+    if (hasProject) {
+        return { label: 'All changes saved', detail: 'Project is stored in your account.', className: 'text-gray-400' };
+    }
+
+    return { label: 'Not saved yet', detail: 'Autosave will create the project after your first edit.', className: 'text-gray-500' };
+}
+
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
 function ExportBadge({ status }) {
@@ -2632,26 +2793,26 @@ function QuickActionsBar({ selectedClip, settings, onUpdateSetting, onBatchUpdat
 // ─── Main editor page ─────────────────────────────────────────────────────────
 
 export default function MontageEditor({ video, clips, project }) {
+    const hydratedProject = useMemo(() => hydrateProjectState(project, clips), [project, clips]);
+    const hydratedPayload = useMemo(() => buildProjectPayload(video.id, hydratedProject), [video.id, hydratedProject]);
+    const hydratedFingerprint = useMemo(() => JSON.stringify(hydratedPayload), [hydratedPayload]);
 
     // ── Project state ─────────────────────────────────────────────────────────
-    const [projectId,      setProjectId]      = useState(project?.id    ?? null);
-    const [projectTitle,   setProjectTitle]   = useState(project?.title ?? 'My Montage');
-    const [orderedClipIds, setOrderedClipIds] = useState(project?.clip_order ?? []);
-    const [clipSettings,     setClipSettings]     = useState(project?.clip_settings ?? {});
-    const [titleCard,        setTitleCard]        = useState(project?.title_card ?? { enabled: false, text: '', subtitle: '', duration: 3, bg_style: 'clean-fade', animation: 'fade' });
-    const [projectSettings,  setProjectSettings]  = useState(project?.project_settings ?? {
-        outro_card:   { enabled: false, text: '', subtitle: '', duration: 3, bg_style: 'clean-fade', animation: 'fade' },
-        aspect_ratio: 'original',
-        quality:      'high',
-        music:        { track_id: null, file_path: null, original_name: null, volume: 0.5, fade_in: 0, fade_out: 2, loop: false, duck_clips: false, mute_clips_globally: false },
-    });
+    const [projectId, setProjectId] = useState(hydratedProject.projectId);
+    const [projectTitle, setProjectTitle] = useState(hydratedProject.projectTitle);
+    const [orderedClipIds, setOrderedClipIds] = useState(hydratedProject.orderedClipIds);
+    const [clipSettings, setClipSettings] = useState(hydratedProject.clipSettings);
+    const [titleCard, setTitleCard] = useState(hydratedProject.titleCard);
+    const [projectSettings, setProjectSettings] = useState(hydratedProject.projectSettings);
 
     // ── Export state ──────────────────────────────────────────────────────────
-    const [exportStatus,   setExportStatus]   = useState(project?.status ?? null);
-    const [outputUrl,      setOutputUrl]      = useState(project?.output_url ?? null);
-    const [errorMessage,   setErrorMessage]   = useState(project?.error_message ?? null);
-    const [saving,         setSaving]         = useState(false);
-    const [saveOk,         setSaveOk]         = useState(false);
+    const [exportStatus, setExportStatus] = useState(hydratedProject.exportStatus);
+    const [outputUrl, setOutputUrl] = useState(hydratedProject.outputUrl);
+    const [errorMessage, setErrorMessage] = useState(hydratedProject.errorMessage);
+    const [saving, setSaving] = useState(false);
+    const [saveState, setSaveState] = useState(hydratedProject.projectId ? 'saved' : 'idle');
+    const [saveError, setSaveError] = useState(null);
+    const [lastSavedAt, setLastSavedAt] = useState(hydratedProject.lastSavedAt);
 
     // ── Editor UI state ───────────────────────────────────────────────────────
     const [selectedStoryboardId, setSelectedStoryboardId] = useState(null);
@@ -2662,6 +2823,12 @@ export default function MontageEditor({ video, clips, project }) {
     const [mobileTab,            setMobileTab]             = useState('edit'); // 'clips' | 'edit' | 'inspect'
 
     const pollRef = useRef(null);
+    const autosaveTimeoutRef = useRef(null);
+    const projectIdRef = useRef(hydratedProject.projectId);
+    const latestPayloadRef = useRef({ payload: hydratedPayload, fingerprint: hydratedFingerprint });
+    const savedFingerprintRef = useRef(hydratedFingerprint);
+    const saveChainRef = useRef(Promise.resolve());
+    const hydratingRef = useRef(false);
 
     // ── Derived ───────────────────────────────────────────────────────────────
     const clipsMap     = useMemo(() => Object.fromEntries(clips.map(c => [c.id, c])), [clips]);
@@ -2669,6 +2836,51 @@ export default function MontageEditor({ video, clips, project }) {
     const orderedClips = useMemo(() => orderedClipIds.map(id => clipsMap[id]).filter(Boolean), [orderedClipIds, clipsMap]);
     const selectedClip = selectedStoryboardId ? clipsMap[selectedStoryboardId] : null;
     const isExporting  = exportStatus === 'rendering';
+    const currentPayload = useMemo(() => buildProjectPayload(video.id, {
+        projectTitle,
+        orderedClipIds,
+        clipSettings,
+        titleCard,
+        projectSettings,
+    }), [video.id, projectTitle, orderedClipIds, clipSettings, titleCard, projectSettings]);
+    const currentFingerprint = useMemo(() => JSON.stringify(currentPayload), [currentPayload]);
+    const saveIndicator = useMemo(
+        () => getSaveIndicator(saveState, lastSavedAt, Boolean(projectId), saveError),
+        [saveState, lastSavedAt, projectId, saveError],
+    );
+
+    useEffect(() => {
+        hydratingRef.current = true;
+
+        setProjectId(hydratedProject.projectId);
+        setProjectTitle(hydratedProject.projectTitle);
+        setOrderedClipIds(hydratedProject.orderedClipIds);
+        setClipSettings(hydratedProject.clipSettings);
+        setTitleCard(hydratedProject.titleCard);
+        setProjectSettings(hydratedProject.projectSettings);
+        setExportStatus(hydratedProject.exportStatus);
+        setOutputUrl(hydratedProject.outputUrl);
+        setErrorMessage(hydratedProject.errorMessage);
+        setLastSavedAt(hydratedProject.lastSavedAt);
+        setSelectedStoryboardId(null);
+        setSaveError(null);
+        setSaveState(hydratedProject.projectId ? 'saved' : 'idle');
+
+        projectIdRef.current = hydratedProject.projectId;
+        latestPayloadRef.current = { payload: hydratedPayload, fingerprint: hydratedFingerprint };
+        savedFingerprintRef.current = hydratedFingerprint;
+
+        const timerId = window.setTimeout(() => {
+            hydratingRef.current = false;
+        }, 0);
+
+        return () => window.clearTimeout(timerId);
+    }, [hydratedProject, hydratedPayload, hydratedFingerprint]);
+
+    useEffect(() => {
+        latestPayloadRef.current = { payload: currentPayload, fingerprint: currentFingerprint };
+        projectIdRef.current = projectId;
+    }, [currentPayload, currentFingerprint, projectId]);
 
     // ── Clip actions ──────────────────────────────────────────────────────────
     const addClip = useCallback((clip) => {
@@ -2749,29 +2961,112 @@ export default function MontageEditor({ video, clips, project }) {
         return () => { if (pollRef.current) clearInterval(pollRef.current); };
     }, [isExporting, projectId, startPolling]);
 
+    const persistProject = useCallback(async ({ keepalive = false } = {}) => {
+        const { payload, fingerprint } = latestPayloadRef.current;
+        const pid = projectIdRef.current;
+        const requestPayload = pid
+            ? { ...payload, video_id: undefined }
+            : payload;
+
+        setSaving(true);
+        setSaveState('saving');
+        setSaveError(null);
+
+        try {
+            const data = pid
+                ? await apiFetch(`/montage-projects/${pid}`, { method: 'PUT', body: JSON.stringify(requestPayload), keepalive })
+                : await apiFetch('/montage-projects', { method: 'POST', body: JSON.stringify(requestPayload), keepalive });
+
+            const savedProject = data.project;
+
+            if (savedProject?.id) {
+                projectIdRef.current = savedProject.id;
+                setProjectId(savedProject.id);
+            }
+
+            setExportStatus(savedProject?.status ?? null);
+            setOutputUrl(savedProject?.output_url ?? null);
+            setErrorMessage(savedProject?.error_message ?? null);
+
+            const persistedAt = savedProject?.last_edited_at ?? savedProject?.updated_at ?? new Date().toISOString();
+            setLastSavedAt(persistedAt);
+            savedFingerprintRef.current = fingerprint;
+            setSaveState('saved');
+
+            return savedProject;
+        } catch (err) {
+            const message = err.message ?? 'Failed to save project.';
+            setSaveState('error');
+            setSaveError(message);
+            throw err;
+        } finally {
+            setSaving(false);
+        }
+    }, []);
+
+    const queueSave = useCallback((options = {}) => {
+        const nextSave = saveChainRef.current
+            .catch(() => null)
+            .then(() => persistProject(options));
+
+        saveChainRef.current = nextSave.catch(() => null);
+
+        return nextSave;
+    }, [persistProject]);
+
+    useEffect(() => {
+        if (hydratingRef.current || isExporting) return undefined;
+        if (currentFingerprint === savedFingerprintRef.current) return undefined;
+
+        if (autosaveTimeoutRef.current) {
+            clearTimeout(autosaveTimeoutRef.current);
+        }
+
+        autosaveTimeoutRef.current = window.setTimeout(() => {
+            queueSave().catch(() => null);
+        }, 1200);
+
+        return () => {
+            if (autosaveTimeoutRef.current) {
+                clearTimeout(autosaveTimeoutRef.current);
+                autosaveTimeoutRef.current = null;
+            }
+        };
+    }, [currentFingerprint, isExporting, queueSave]);
+
+    useEffect(() => {
+        const flushPendingChanges = () => {
+            if (hydratingRef.current) return;
+            if (latestPayloadRef.current.fingerprint === savedFingerprintRef.current) return;
+            queueSave({ keepalive: true }).catch(() => null);
+        };
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'hidden') {
+                flushPendingChanges();
+            }
+        };
+
+        const handleBeforeUnload = () => {
+            flushPendingChanges();
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('beforeunload', handleBeforeUnload);
+
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+        };
+    }, [queueSave]);
+
     // ── Export flow ───────────────────────────────────────────────────────────
     async function handleExport() {
         if (orderedClipIds.length === 0) return;
-        setSaving(true);
-
-        const payload = {
-            video_id:         video.id,
-            title:            projectTitle,
-            clip_order:       orderedClipIds,
-            clip_settings:    clipSettings,
-            title_card:       titleCard,
-            project_settings: projectSettings,
-        };
 
         try {
-            let pid = projectId;
-            if (pid) {
-                await apiFetch(`/montage-projects/${pid}`, { method: 'PUT', body: JSON.stringify(payload) });
-            } else {
-                const data = await apiFetch('/montage-projects', { method: 'POST', body: JSON.stringify(payload) });
-                pid = data.project.id;
-                setProjectId(pid);
-            }
+            const savedProject = await queueSave();
+            const pid = savedProject?.id ?? projectIdRef.current;
             const data = await apiFetch(`/montage-projects/${pid}/export`, { method: 'POST' });
             setExportStatus('rendering');
             setOutputUrl(null);
@@ -2779,36 +3074,15 @@ export default function MontageEditor({ video, clips, project }) {
             router.visit(data.redirect_url);
         } catch (err) {
             setErrorMessage(err.message ?? 'Failed to start export. Please try again.');
-        } finally {
-            setSaving(false);
         }
     }
 
     // ── Save only ─────────────────────────────────────────────────────────────
     async function handleSave() {
-        setSaving(true);
-        setSaveOk(false);
-        const payload = {
-            video_id:         video.id,
-            title:            projectTitle,
-            clip_order:       orderedClipIds,
-            clip_settings:    clipSettings,
-            title_card:       titleCard,
-            project_settings: projectSettings,
-        };
         try {
-            if (projectId) {
-                await apiFetch(`/montage-projects/${projectId}`, { method: 'PUT', body: JSON.stringify(payload) });
-            } else {
-                const data = await apiFetch('/montage-projects', { method: 'POST', body: JSON.stringify(payload) });
-                setProjectId(data.project.id);
-            }
-            setSaveOk(true);
-            setTimeout(() => setSaveOk(false), 2500);
+            await queueSave();
         } catch (err) {
-            setErrorMessage(err.message);
-        } finally {
-            setSaving(false);
+            setSaveError(err.message ?? 'Failed to save project.');
         }
     }
 
@@ -2863,6 +3137,10 @@ export default function MontageEditor({ video, clips, project }) {
                                 </button>
                             )}
                             <p className="text-xs text-gray-700 truncate">{video.original_name}</p>
+                            <div className="mt-1 flex items-center gap-2 text-[11px]">
+                                <span className={saveIndicator.className}>{saveIndicator.label}</span>
+                                {saveIndicator.detail ? <span className="text-gray-600">· {saveIndicator.detail}</span> : null}
+                            </div>
                         </div>
 
                         {/* Status + actions */}
@@ -2874,12 +3152,14 @@ export default function MontageEditor({ video, clips, project }) {
                                 disabled={saving || isExporting}
                                 className={[
                                     'text-xs font-medium px-3 py-1.5 rounded-lg transition-all border disabled:opacity-40',
-                                    saveOk
-                                        ? 'text-green-400 bg-green-500/10 border-green-500/30'
-                                        : 'text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 border-white/8',
+                                    saveState === 'error'
+                                        ? 'text-red-300 bg-red-500/10 border-red-500/20'
+                                        : saveState === 'saving'
+                                            ? 'text-violet-300 bg-violet-500/10 border-violet-500/20'
+                                            : 'text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 border-white/8',
                                 ].join(' ')}
                             >
-                                {saving ? 'Saving…' : saveOk ? 'Saved ✓' : 'Save'}
+                                {saving ? 'Saving…' : 'Save now'}
                             </button>
 
                             <button

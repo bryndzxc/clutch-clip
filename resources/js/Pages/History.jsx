@@ -1,5 +1,6 @@
 import { Head, router } from '@inertiajs/react';
 import DashboardHeader from '../Components/Dashboard/DashboardHeader';
+import ResumeProjectsPanel from '../Components/Projects/ResumeProjectsPanel';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -168,7 +169,7 @@ function EmptyState() {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export default function History({ videos = [] }) {
+export default function History({ videos = [], recentProjects = [] }) {
     const doneCount       = videos.filter(v => v.status === 'done').length;
     const processingCount = videos.filter(v => v.status === 'pending' || v.status === 'processing').length;
     const totalClips      = videos.reduce((sum, v) => sum + (v.clips_count ?? 0), 0);
@@ -191,15 +192,23 @@ export default function History({ videos = [] }) {
                                 A log of every video you've processed with ClutchClip.
                             </p>
                         </div>
-                        <a
-                            href="/upload"
-                            className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold px-5 py-2.5 transition-all duration-200 shadow-lg shadow-violet-500/25 hover:shadow-violet-500/40 hover:-translate-y-px"
-                        >
-                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                            </svg>
-                            New upload
-                        </a>
+                        <div className="flex flex-wrap gap-3 shrink-0">
+                            <a
+                                href="/montage-projects"
+                                className="inline-flex items-center gap-2 rounded-xl border border-white/8 bg-gray-900 px-5 py-2.5 text-sm font-medium text-gray-300 transition-colors hover:border-white/15 hover:bg-gray-800 hover:text-white"
+                            >
+                                Projects
+                            </a>
+                            <a
+                                href="/upload"
+                                className="inline-flex items-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold px-5 py-2.5 transition-all duration-200 shadow-lg shadow-violet-500/25 hover:shadow-violet-500/40 hover:-translate-y-px"
+                            >
+                                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                                </svg>
+                                New upload
+                            </a>
+                        </div>
                     </div>
 
                     {/* ── Stats row (only when there's data) ────────────── */}
@@ -231,6 +240,16 @@ export default function History({ videos = [] }) {
                             </p>
                         </div>
                     )}
+
+                    <div className="mb-8">
+                        <ResumeProjectsPanel
+                            title="Resume saved montage projects"
+                            subtitle="Drafts are shown first so you can jump back into unfinished edits quickly."
+                            projects={recentProjects}
+                            emptyTitle="No saved projects in progress"
+                            emptyDescription="Create a montage from any results page and it will show up here."
+                        />
+                    </div>
 
                     {/* ── List ────────────────────────────────────────── */}
                     {videos.length === 0 ? (

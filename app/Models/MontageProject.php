@@ -20,6 +20,7 @@ class MontageProject extends Model
         'title_card',
         'project_settings',
         'status',
+        'last_edited_at',
         'output_path',
         'error_message',
         'queued_at',
@@ -33,6 +34,7 @@ class MontageProject extends Model
             'clip_settings'    => 'array',
             'title_card'       => 'array',
             'project_settings' => 'array',
+            'last_edited_at'   => 'datetime',
             'queued_at'        => 'datetime',
             'completed_at'     => 'datetime',
         ];
