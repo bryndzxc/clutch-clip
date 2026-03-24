@@ -55,8 +55,27 @@ Route::middleware('auth')->group(function () {
     Route::post('/montage-projects/{project}/export', [MontageProjectController::class, 'export'])->name('montage-projects.export');
     Route::get('/montage-projects/{project}/download', [MontageProjectController::class, 'download'])->name('montage-projects.download');
     Route::get('/api/montage-projects/{project}/status', [MontageProjectController::class, 'status'])->name('montage-projects.status');
+    Route::post('/montage-projects/{project}/music', [MontageProjectController::class, 'uploadMusic'])->name('montage-projects.uploadMusic');
+    Route::delete('/montage-projects/{project}/music', [MontageProjectController::class, 'deleteMusic'])->name('montage-projects.deleteMusic');
+
+    // Built-in music preview (auth-gated, cached, whitelist-validated)
+    Route::get('/music/builtin/{trackId}', function (string $trackId) {
+        $allowed = ['energy-pulse', 'neon-nights', 'clutch-moment', 'smooth-grind', 'flash-zone'];
+        if (!in_array($trackId, $allowed, true)) {
+            abort(404);
+        }
+        $path = storage_path('app/music/builtin/' . $trackId . '.mp3');
+        if (!file_exists($path)) {
+            abort(404, 'Track not available yet.');
+        }
+        return response()->file($path, [
+            'Content-Type'  => 'audio/mpeg',
+            'Cache-Control' => 'public, max-age=86400',
+        ]);
+    })->name('music.builtin');
 
     Route::get('/montages', [MontageController::class, 'index'])->name('montages.index');
     Route::get('/montages/{montage}', [MontageController::class, 'show'])->name('montages.show');
+    Route::get('/montages/{montage}/stream', [MontageController::class, 'stream'])->name('montages.stream');
     Route::delete('/montages/{montage}', [MontageController::class, 'destroy'])->name('montages.destroy');
 });

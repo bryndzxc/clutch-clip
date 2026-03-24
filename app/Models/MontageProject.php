@@ -18,6 +18,7 @@ class MontageProject extends Model
         'clip_order',
         'clip_settings',
         'title_card',
+        'project_settings',
         'status',
         'output_path',
         'error_message',
@@ -28,11 +29,12 @@ class MontageProject extends Model
     protected function casts(): array
     {
         return [
-            'clip_order'    => 'array',
-            'clip_settings' => 'array',
-            'title_card'    => 'array',
-            'queued_at'     => 'datetime',
-            'completed_at'  => 'datetime',
+            'clip_order'       => 'array',
+            'clip_settings'    => 'array',
+            'title_card'       => 'array',
+            'project_settings' => 'array',
+            'queued_at'        => 'datetime',
+            'completed_at'     => 'datetime',
         ];
     }
 
