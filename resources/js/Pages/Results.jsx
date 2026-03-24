@@ -1,4 +1,4 @@
-import { Head } from '@inertiajs/react';
+import { Head, router } from '@inertiajs/react';
 import { useState, useEffect } from 'react';
 import DashboardHeader from '../Components/Dashboard/DashboardHeader';
 import ClipRefinementModal from '../Components/ClipRefinementModal';
@@ -366,6 +366,160 @@ function downloadAll(clips) {
     });
 }
 
+// ─── AI Montage Panel ─────────────────────────────────────────────────────────
+
+const AI_MODES = [
+    {
+        id: 'auto',
+        label: 'Auto',
+        desc: 'Best clips, dramatic arc',
+        icon: (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z" />
+            </svg>
+        ),
+    },
+    {
+        id: 'flashy',
+        label: 'Flashy',
+        desc: 'Max effects, high energy',
+        icon: (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" />
+            </svg>
+        ),
+    },
+    {
+        id: 'cinematic',
+        label: 'Cinematic',
+        desc: 'Slow-mo, gradual build',
+        icon: (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z" />
+            </svg>
+        ),
+    },
+    {
+        id: 'clean',
+        label: 'Clean',
+        desc: 'Minimal, smooth cuts',
+        icon: (
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+            </svg>
+        ),
+    },
+];
+
+function AiMontagePanel({ videoId }) {
+    const [open, setOpen]       = useState(false);
+    const [mode, setMode]       = useState('auto');
+    const [loading, setLoading] = useState(false);
+    const [error, setError]     = useState(null);
+
+    async function handleGenerate() {
+        setLoading(true);
+        setError(null);
+        try {
+            const res = await fetch(`/videos/${videoId}/ai-montage`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept':       'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+                },
+                body: JSON.stringify({ mode }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message ?? 'Generation failed. Please try again.');
+            router.visit(data.redirect_url);
+        } catch (err) {
+            setError(err.message);
+            setLoading(false);
+        }
+    }
+
+    if (!open) {
+        return (
+            <button
+                onClick={() => setOpen(true)}
+                className="relative flex items-center justify-center gap-2 w-full rounded-xl text-white text-sm font-semibold py-2.5 overflow-hidden transition-all duration-200 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 shadow-lg shadow-violet-500/30 hover:shadow-violet-500/50 hover:-translate-y-px"
+            >
+                <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" />
+                </svg>
+                Generate with AI
+            </button>
+        );
+    }
+
+    return (
+        <div className="rounded-xl border border-violet-500/25 bg-violet-500/5 p-3 space-y-3">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-violet-300 uppercase tracking-wider">Choose style</span>
+                <button
+                    onClick={() => { setOpen(false); setError(null); }}
+                    className="text-gray-600 hover:text-gray-400 transition-colors"
+                    aria-label="Cancel"
+                >
+                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            {/* Mode grid */}
+            <div className="grid grid-cols-2 gap-1.5">
+                {AI_MODES.map(m => (
+                    <button
+                        key={m.id}
+                        onClick={() => setMode(m.id)}
+                        className={[
+                            'flex flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left transition-all duration-150 border',
+                            mode === m.id
+                                ? 'bg-violet-600/20 border-violet-500/50 text-white'
+                                : 'bg-gray-900/60 border-white/8 text-gray-400 hover:border-white/20 hover:text-gray-300',
+                        ].join(' ')}
+                    >
+                        <span className={`${mode === m.id ? 'text-violet-300' : 'text-gray-600'} transition-colors`}>
+                            {m.icon}
+                        </span>
+                        <span className="text-xs font-semibold leading-tight">{m.label}</span>
+                        <span className="text-[10px] leading-tight opacity-70">{m.desc}</span>
+                    </button>
+                ))}
+            </div>
+
+            {/* Error */}
+            {error && (
+                <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                    {error}
+                </p>
+            )}
+
+            {/* Generate button */}
+            <button
+                onClick={handleGenerate}
+                disabled={loading}
+                className="flex items-center justify-center gap-2 w-full rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-semibold py-2 transition-colors"
+            >
+                {loading ? (
+                    <>
+                        <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Generating draft…
+                    </>
+                ) : (
+                    `Generate ${AI_MODES.find(m => m.id === mode)?.label ?? ''}`
+                )}
+            </button>
+        </div>
+    );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Results({ video, initialClips = [] }) {
@@ -531,10 +685,13 @@ export default function Results({ video, initialClips = [] }) {
                                 <div className="bg-gray-900 border border-white/8 rounded-2xl p-5 space-y-2.5">
                                     <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Actions</h3>
 
-                                    {/* Montage editor entry point */}
+                                    {/* AI montage generator */}
+                                    <AiMontagePanel videoId={video.id} />
+
+                                    {/* Manual montage editor entry point */}
                                     <a
                                         href={`/videos/${video.id}/montage/new`}
-                                        className="flex items-center justify-center gap-2 w-full rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold py-2.5 transition-all duration-200 shadow-lg shadow-violet-500/25 hover:shadow-violet-500/40 hover:-translate-y-px"
+                                        className="flex items-center justify-center gap-2 w-full rounded-xl bg-gray-800 hover:bg-gray-700 border border-white/8 text-gray-300 hover:text-white text-sm font-medium py-2.5 transition-all duration-200"
                                     >
                                         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
                                             <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 0 1-1.125-1.125M3.375 19.5h1.5C5.496 19.5 6 18.996 6 18.375m-3.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125 1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-1.5A1.125 1.125 0 0 1 18 18.375M20.625 4.5H3.375m17.25 0c.621 0 1.125.504 1.125 1.125M20.625 4.5h-1.5C18.504 4.5 18 5.004 18 5.625m3.75 0v1.5c0 .621-.504 1.125-1.125 1.125M3.375 4.5c-.621 0-1.125.504-1.125 1.125M3.375 4.5h1.5C5.496 4.5 6 5.004 6 5.625m-3.75 0v1.5c0 .621.504 1.125 1.125 1.125m0 0h1.5m-1.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m1.5-3.75C5.496 8.25 6 8.754 6 9.375v1.5m0-5.25v5.25m0-5.25C6 5.004 6.504 4.5 7.125 4.5h9.75c.621 0 1.125.504 1.125 1.125m1.125 2.625h1.5m-1.5 0A1.125 1.125 0 0 1 18 7.125v1.5m1.125-1.125c.621 0 1.125.504 1.125 1.125v1.5m-7.5-6v5.625m0 0v5.625M12 10.5h.008v.008H12V10.5Zm0 5.25h.008v.008H12v-.008Z" />

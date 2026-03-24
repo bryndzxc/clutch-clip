@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AiMontageController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ClipController;
 use App\Http\Controllers\MontageController;
@@ -46,6 +47,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/clips/{video}/{clip}/refined', [ClipController::class, 'serveRefined'])->name('clips.serveRefined');
 
     Route::get('/videos/{video}/montage/new', [MontageProjectController::class, 'create'])->name('montage-projects.create');
+    Route::post('/videos/{video}/ai-montage', [AiMontageController::class, 'generate'])->name('ai-montage.generate');
 
     Route::post('/montage-projects', [MontageProjectController::class, 'store'])->name('montage-projects.store');
     Route::get('/montage-projects/{project}', [MontageProjectController::class, 'show'])->name('montage-projects.show');

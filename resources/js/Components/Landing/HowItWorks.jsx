@@ -1,31 +1,36 @@
+import { GlassPanel, IconShell, SectionHeading } from './LandingPrimitives';
+
 const steps = [
     {
-        number: '01',
-        title: 'Upload Your Footage',
-        description: 'Drop in any gameplay recording — up to 1.5 GB. Supports MP4, MKV, WebM, and AVI.',
+        step: '01',
+        title: 'Upload Gameplay',
+        description: 'Drop in your raw gameplay footage and let ClutchClip start processing immediately.',
+        tone: 'violet',
         icon: (
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth="1.7" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V3.75m0 0-4.5 4.5M12 3.75l4.5 4.5M3.75 15.75v2.25A2.25 2.25 0 0 0 6 20.25h12A2.25 2.25 0 0 0 20.25 18v-2.25" />
             </svg>
         ),
     },
     {
-        number: '02',
-        title: 'AI Detects Highlights',
-        description: 'Our model scans audio intensity and motion peaks to pinpoint every clutch moment.',
+        step: '02',
+        title: 'AI Finds Highlights',
+        description: 'The model scores your footage, detects standout moments, and assembles the strongest sequence.',
+        tone: 'cyan',
         icon: (
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23-.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth="1.7" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h4.5l2.25-6 4.5 12 2.25-6h3" />
             </svg>
         ),
     },
     {
-        number: '03',
-        title: 'Download Your Clips',
-        description: 'Preview every highlight, download the ones you want, and share instantly.',
+        step: '03',
+        title: 'Download Your Montage',
+        description: 'Preview the edit, make quick tweaks if you want, and export a ready-to-share final cut.',
+        tone: 'fuchsia',
         icon: (
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth="1.7" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 3.75v11.5m0 0 4.5-4.5m-4.5 4.5-4.5-4.5m-2.25 7.5h13.5" />
             </svg>
         ),
     },
@@ -33,39 +38,29 @@ const steps = [
 
 export default function HowItWorks() {
     return (
-        <section id="how-it-works" className="py-24 md:py-32 px-6">
-            <div className="mx-auto max-w-6xl">
-                {/* Header */}
-                <div className="text-center mb-16">
-                    <p className="text-xs font-semibold uppercase tracking-widest text-violet-400 mb-3">Process</p>
-                    <h2 className="text-3xl md:text-4xl font-bold text-white tracking-tight">
-                        From footage to highlights<br />in three steps.
-                    </h2>
-                </div>
+        <section id="how-it-works" className="px-6 py-24 md:py-32">
+            <div className="mx-auto max-w-7xl">
+                <SectionHeading
+                    eyebrow="How it works"
+                    title="Three steps from raw footage to finished montage"
+                    description="No complex workflow. Upload your session, let the AI build the first edit, then download a clip package or a polished montage."
+                />
 
-                {/* Steps */}
-                <div className="relative grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {/* Connecting line (desktop only) */}
-                    <div className="hidden md:block absolute top-10 left-1/6 right-1/6 h-px bg-gradient-to-r from-transparent via-violet-500/30 to-transparent" />
+                <div className="relative grid gap-5 lg:grid-cols-3">
+                    <div className="pointer-events-none absolute left-[16.5%] right-[16.5%] top-10 hidden h-px bg-gradient-to-r from-transparent via-violet-400/30 to-transparent lg:block" />
 
-                    {steps.map((step, i) => (
-                        <div
-                            key={i}
-                            className="relative rounded-2xl border border-white/6 bg-slate-900/50 p-8 hover:border-violet-500/30 transition-colors group"
+                    {steps.map((step) => (
+                        <GlassPanel
+                            key={step.step}
+                            className="group relative overflow-hidden p-6 transition-all duration-300 hover:-translate-y-1 hover:border-violet-400/20 hover:bg-white/[0.05]"
                         >
-                            {/* Number */}
-                            <span className="text-5xl font-black text-white/5 absolute top-6 right-6 select-none">
-                                {step.number}
+                            <span className="absolute right-6 top-6 text-5xl font-semibold tracking-tight text-white/6">
+                                {step.step}
                             </span>
-
-                            {/* Icon */}
-                            <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-violet-500/10 text-violet-400 mb-6 group-hover:bg-violet-500/20 transition-colors">
-                                {step.icon}
-                            </div>
-
-                            <h3 className="text-lg font-semibold text-white mb-2">{step.title}</h3>
-                            <p className="text-sm text-gray-400 leading-relaxed">{step.description}</p>
-                        </div>
+                            <IconShell tone={step.tone}>{step.icon}</IconShell>
+                            <h3 className="mt-5 text-xl font-semibold text-white">{step.title}</h3>
+                            <p className="mt-3 text-sm leading-7 text-slate-300">{step.description}</p>
+                        </GlassPanel>
                     ))}
                 </div>
             </div>

@@ -25,6 +25,11 @@
     100% { transform: translateX(220%); opacity: 0; }
 }
 
+@keyframes float-soft {
+    0%, 100% { transform: translate3d(0, 0, 0); }
+    50% { transform: translate3d(0, -18px, 0); }
+}
+
 /* ── Animation utilities ─────────────────────────────────────────────────────*/
 
 @layer utilities {
@@ -33,4 +38,6 @@
     .animate-fade-up-2 { animation: fade-up 0.4s 0.14s ease-out both; }
     .animate-fade-up-3 { animation: fade-up 0.4s 0.21s ease-out both; }
     .animate-scan-x    { animation: scan-x 2.6s ease-in-out infinite; }
+    .animate-float-soft { animation: float-soft 12s ease-in-out infinite; }
+    .animate-float-soft-delayed { animation: float-soft 14s ease-in-out infinite; }
 }
