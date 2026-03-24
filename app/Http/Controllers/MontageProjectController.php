@@ -48,6 +48,11 @@ class MontageProjectController extends Controller
             'clip_order'                                        => ['nullable', 'array'],
             'clip_order.*'                                      => ['integer'],
             'clip_settings'                                     => ['nullable', 'array'],
+            'clip_settings.*.effects'                           => ['nullable', 'array'],
+            'clip_settings.*.effects.*.type'                    => ['required', 'string', 'in:flash,zoom-hit,glitch,shake,blur-whip,slow-mo,fire,neon-glow,speed-up,rgb-split'],
+            'clip_settings.*.effects.*.start_time'              => ['required', 'numeric', 'min:0'],
+            'clip_settings.*.effects.*.end_time'                => ['required', 'numeric', 'min:0'],
+            'clip_settings.*.effects.*.intensity'               => ['nullable', 'numeric', 'min:0', 'max:1'],
             'title_card'                                        => ['nullable', 'array'],
             'title_card.enabled'                                => ['boolean'],
             'title_card.text'                                   => ['nullable', 'string', 'max:80'],
@@ -55,6 +60,7 @@ class MontageProjectController extends Controller
             'title_card.duration'                               => ['nullable', 'integer', 'min:1', 'max:10'],
             'title_card.bg_style'                               => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
             'title_card.animation'                              => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
+            'title_card.template_id'                            => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
             'project_settings'                                  => ['nullable', 'array'],
             'project_settings.outro_card'                       => ['nullable', 'array'],
             'project_settings.outro_card.enabled'               => ['boolean'],
@@ -63,6 +69,7 @@ class MontageProjectController extends Controller
             'project_settings.outro_card.duration'              => ['nullable', 'integer', 'min:1', 'max:10'],
             'project_settings.outro_card.bg_style'              => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
             'project_settings.outro_card.animation'             => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
+            'project_settings.outro_card.template_id'           => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
             'project_settings.aspect_ratio'                     => ['nullable', 'string', 'in:original,16:9,9:16,1:1'],
             'project_settings.quality'                          => ['nullable', 'string', 'in:standard,high,smaller'],
             'project_settings.music'                            => ['nullable', 'array'],
@@ -103,6 +110,11 @@ class MontageProjectController extends Controller
             'clip_order'                                        => ['nullable', 'array'],
             'clip_order.*'                                      => ['integer'],
             'clip_settings'                                     => ['nullable', 'array'],
+            'clip_settings.*.effects'                           => ['nullable', 'array'],
+            'clip_settings.*.effects.*.type'                    => ['required', 'string', 'in:flash,zoom-hit,glitch,shake,blur-whip,slow-mo,fire,neon-glow,speed-up,rgb-split'],
+            'clip_settings.*.effects.*.start_time'              => ['required', 'numeric', 'min:0'],
+            'clip_settings.*.effects.*.end_time'                => ['required', 'numeric', 'min:0'],
+            'clip_settings.*.effects.*.intensity'               => ['nullable', 'numeric', 'min:0', 'max:1'],
             'title_card'                                        => ['nullable', 'array'],
             'title_card.enabled'                                => ['boolean'],
             'title_card.text'                                   => ['nullable', 'string', 'max:80'],
@@ -110,6 +122,7 @@ class MontageProjectController extends Controller
             'title_card.duration'                               => ['nullable', 'integer', 'min:1', 'max:10'],
             'title_card.bg_style'                               => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
             'title_card.animation'                              => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
+            'title_card.template_id'                            => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
             'project_settings'                                  => ['nullable', 'array'],
             'project_settings.outro_card'                       => ['nullable', 'array'],
             'project_settings.outro_card.enabled'               => ['boolean'],
@@ -118,6 +131,7 @@ class MontageProjectController extends Controller
             'project_settings.outro_card.duration'              => ['nullable', 'integer', 'min:1', 'max:10'],
             'project_settings.outro_card.bg_style'              => ['nullable', 'string', 'in:clean-fade,neon-slide,pulse-zoom,gaming-flash,cinematic-reveal'],
             'project_settings.outro_card.animation'             => ['nullable', 'string', 'in:fade,slide,zoom,flash,reveal'],
+            'project_settings.outro_card.template_id'           => ['nullable', 'string', 'in:fire-scope-reveal,blue-energy-sweep,neon-pulse-intro,glitch-reveal,cinematic-shockwave'],
             'project_settings.aspect_ratio'                     => ['nullable', 'string', 'in:original,16:9,9:16,1:1'],
             'project_settings.quality'                          => ['nullable', 'string', 'in:standard,high,smaller'],
             'project_settings.music'                            => ['nullable', 'array'],
@@ -325,13 +339,13 @@ class MontageProjectController extends Controller
 
     private function defaultTitleCard(): array
     {
-        return ['enabled' => false, 'text' => '', 'subtitle' => '', 'duration' => 3, 'bg_style' => 'clean-fade', 'animation' => 'fade'];
+        return ['enabled' => false, 'text' => '', 'subtitle' => '', 'duration' => 3, 'bg_style' => 'clean-fade', 'animation' => 'fade', 'template_id' => null];
     }
 
     private function defaultProjectSettings(): array
     {
         return [
-            'outro_card'   => ['enabled' => false, 'text' => '', 'subtitle' => '', 'duration' => 3, 'bg_style' => 'clean-fade', 'animation' => 'fade'],
+            'outro_card'   => ['enabled' => false, 'text' => '', 'subtitle' => '', 'duration' => 3, 'bg_style' => 'clean-fade', 'animation' => 'fade', 'template_id' => null],
             'aspect_ratio' => 'original',
             'quality'      => 'high',
             'music'        => [

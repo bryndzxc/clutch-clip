@@ -18,6 +18,78 @@ function fmtDur(s) {
     return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+function uid() { return Math.random().toString(36).slice(2, 9); }
+
+// Parse the number of kill/event moments from a clip label.
+// Handles patterns like "2kill", "3-kill", "double kill", "triple", "ace", etc.
+function getKillCount(clip) {
+    const label = (clip?.label ?? '').toLowerCase();
+    const words  = { one: 1, double: 2, triple: 3, quad: 4, quadra: 4, penta: 5, ace: 5, ultra: 4 };
+    for (const [word, n] of Object.entries(words)) {
+        if (label.includes(word)) return n;
+    }
+    const m = label.match(/(\d+)/);
+    if (m) return Math.min(5, Math.max(1, parseInt(m[1], 10)));
+    return 1;
+}
+
+// Return N evenly-spaced clip-relative timestamps for a multi-kill clip.
+// Single kill → same logic as getClipHighlightOffset.
+// Multi-kill  → spread from 25% to 75% through the trimmed region.
+function getKillOffsets(clip, settings, count) {
+    const trimStart = settings?.trim_start ?? 0;
+    const trimEnd   = settings?.trim_end   ?? parseFloat(clip?.duration ?? 0);
+    const clipLen   = Math.max(0.1, trimEnd - trimStart);
+    if (count <= 1) return [getClipHighlightOffset(clip, settings)];
+    // Spread the N kills between 25 % and 75 % of the clip
+    return Array.from({ length: count }, (_, i) => {
+        const t = trimStart + clipLen * (0.25 + (i / (count - 1)) * 0.50);
+        return +Math.max(trimStart + 0.1, Math.min(trimEnd - 0.1, t)).toFixed(2);
+    });
+}
+
+// Compute clip-relative timestamp for the key action moment.
+// Gaming highlight clips capture lead-up footage; the peak action typically
+// falls at 35–42% through the trimmed clip depending on the clip label.
+function getClipHighlightOffset(clip, settings) {
+    const trimStart = settings?.trim_start ?? 0;
+    const trimEnd   = settings?.trim_end   ?? parseFloat(clip?.duration ?? 0);
+    const clipLen   = Math.max(0.1, trimEnd - trimStart);
+    const label     = (clip?.label ?? '').toLowerCase();
+    const factor    = label.includes('kill')   ? 0.35
+                    : label.includes('clutch') ? 0.42
+                    : label.includes('multi')  ? 0.38
+                    : 0.40;
+    const raw = trimStart + clipLen * factor;
+    // Keep at least 0.1 s buffer from each edge so effects don't clip out
+    return +Math.max(trimStart + 0.1, Math.min(trimEnd - 0.1, raw)).toFixed(2);
+}
+
+// ─── Inject shake/flash keyframes once ────────────────────────────────────────
+if (typeof document !== 'undefined' && !document.getElementById('cc-fx-styles')) {
+    const _s = document.createElement('style');
+    _s.id = 'cc-fx-styles';
+    _s.textContent = [
+        '@keyframes ccShake{',
+        '0%{transform:translate(6px,-4px) rotate(2deg)}',
+        '20%{transform:translate(-5px,3px) rotate(-1.5deg)}',
+        '40%{transform:translate(5px,-5px) rotate(1deg)}',
+        '60%{transform:translate(-6px,2px) rotate(-2deg)}',
+        '80%{transform:translate(4px,-3px) rotate(1.5deg)}',
+        '100%{transform:translate(-4px,4px) rotate(-1deg)}',
+        '}',
+        '@keyframes ccFlash{',
+        '0%{opacity:0.9} 40%{opacity:0.6} 100%{opacity:0}',
+        '}',
+        '@keyframes ccSpeedLines{',
+        '0%{transform:scaleX(1.04) blur(6px)}',
+        '50%{transform:scaleX(1.06) translateX(3px)}',
+        '100%{transform:scaleX(1.04)}',
+        '}',
+    ].join('');
+    document.head.appendChild(_s);
+}
+
 function getCsrf() {
     return document.querySelector('meta[name="csrf-token"]')?.content ?? '';
 }
@@ -50,7 +122,9 @@ function defaultClipSettings(clip) {
         contrast:     0,
         saturation:   0,
         text_overlay: { enabled: false, text: '', size: 'md', position: 'bottom', color: 'white', animation: 'none', bgBox: true },
-        transition:   { type: 'cut', duration: 0.5 },
+        transition:    { type: 'cut', duration: 0.5 },
+        effect_preset: null,
+        effects:       [],
     };
 }
 
@@ -100,18 +174,27 @@ function ClipThumb({ clip, size = 'md' }) {
 // ─── Card preview overlay ─────────────────────────────────────────────────────
 
 function CardPreviewOverlay({ card, type }) {
-    const bgMap = {
+    const templateBgMap = Object.fromEntries(
+        INTRO_TEMPLATES.map(t => [t.id, `bg-gradient-to-br ${t.gradient}`])
+    );
+    const styleBgMap = {
         'clean-fade':       'bg-gray-900',
         'neon-slide':       'bg-gradient-to-br from-violet-900 to-gray-950',
         'pulse-zoom':       'bg-gradient-to-br from-blue-900 to-gray-950',
         'gaming-flash':     'bg-gradient-to-br from-green-900 to-gray-950',
         'cinematic-reveal': 'bg-gradient-to-br from-yellow-950 to-gray-950',
     };
-    const bg = bgMap[card?.bg_style ?? 'clean-fade'] ?? 'bg-gray-900';
+    const bg = (card?.template_id ? templateBgMap[card.template_id] : null)
+        ?? styleBgMap[card?.bg_style ?? 'clean-fade']
+        ?? 'bg-gray-900';
+    const templateLabel = card?.template_id
+        ? (INTRO_TEMPLATES.find(t => t.id === card.template_id)?.label ?? null)
+        : null;
     return (
         <div className={`absolute inset-0 flex flex-col items-center justify-center gap-2 ${bg}`}>
             <div className="text-[10px] font-bold uppercase tracking-widest text-white/30 mb-1">
                 {type === 'intro' ? '▶ Intro Card' : '◀ Outro Card'}
+                {templateLabel && <span className="ml-1 text-white/20">· {templateLabel}</span>}
             </div>
             {card?.text && (
                 <p className="text-2xl font-bold text-white text-center px-8 leading-snug">{card.text}</p>
@@ -131,13 +214,16 @@ function CardPreviewOverlay({ card, type }) {
 
 // ─── Main Preview (center column, large player) ───────────────────────────────
 
-function MainPreview({ orderedClips, selectedClip, clipSettings, previewMode, onModeChange, onClipSelect, titleCard, outroCard }) {
+function MainPreview({ orderedClips, selectedClip, clipSettings, previewMode, onModeChange, onClipSelect, titleCard, outroCard, onUpdateEffects }) {
     const videoRef     = useRef(null);
     const autoPlayRef  = useRef(false);
     const cardTimerRef = useRef(null);
     const [playing,  setPlaying]  = useState(false);
     const [curTime,  setCurTime]  = useState(0);
     const [seqIndex, setSeqIndex] = useState(0);
+    const [selectedEffId, setSelectedEffId] = useState(null);
+    const [draggingEff,   setDraggingEff]   = useState(null);
+    const effectTrackRef = useRef(null);
 
     // Build sequence items: [intro?, ...clips, outro?]
     const seqItems = useMemo(() => {
@@ -155,31 +241,82 @@ function MainPreview({ orderedClips, selectedClip, clipSettings, previewMode, on
     const activeClip = activeItem?.type === 'clip' ? activeItem.clip : null;
     const activeCard = (activeItem?.type === 'intro' || activeItem?.type === 'outro') ? activeItem : null;
 
-    const settings   = activeClip ? (clipSettings[activeClip.id] ?? {}) : {};
-    const trimStart  = settings.trim_start  ?? 0;
-    const trimEnd    = settings.trim_end    ?? parseFloat(activeClip?.duration ?? 0);
-    const brightness = settings.brightness  ?? 0;
-    const contrast   = settings.contrast   ?? 0;
-    const saturation = settings.saturation  ?? 0;
-    const muted      = settings.muted       ?? false;
-    const volume     = settings.volume      ?? 1.0;
-    const textOv     = settings.text_overlay ?? {};
-    const speed      = settings.speed       ?? 1.0;
-    const duration   = parseFloat(activeClip?.duration ?? 0) || 1;
-    const src        = activeClip ? (activeClip.refined_url || activeClip.url) : null;
+    const settings     = activeClip ? (clipSettings[activeClip.id] ?? {}) : {};
+    const trimStart    = settings.trim_start  ?? 0;
+    const trimEnd      = settings.trim_end    ?? parseFloat(activeClip?.duration ?? 0);
+    const brightness   = settings.brightness  ?? 0;
+    const contrast     = settings.contrast    ?? 0;
+    const saturation   = settings.saturation  ?? 0;
+    const muted        = settings.muted       ?? false;
+    const volume       = settings.volume      ?? 1.0;
+    const textOv       = settings.text_overlay ?? {};
+    const speed        = settings.speed       ?? 1.0;
+    const effectPreset = settings.effect_preset ?? null;
+    const timeEffects  = settings.effects     ?? [];
+    const duration     = parseFloat(activeClip?.duration ?? 0) || 1;
+    const src          = activeClip ? (activeClip.refined_url || activeClip.url) : null;
 
     // Track whether current item is a card (updated synchronously during render)
     const onCardRef = useRef(false);
     onCardRef.current = (previewMode === 'sequence' && activeCard !== null);
 
-    // CSS filter: maps -1..1 range → 0..2 for CSS brightness/contrast/saturate
+    // Clip-relative playback time (0 = start of trimmed clip)
+    const clipT = curTime - trimStart;
+
+    // Active time effects at current playback position
+    const activeTimeEffects = useMemo(() =>
+        timeEffects.filter(e => clipT >= (e.start_time ?? 0) && clipT <= (e.end_time ?? 0)),
+        [timeEffects, clipT] // eslint-disable-line react-hooks/exhaustive-deps
+    );
+
+    // CSS filter: base colour + full-clip preset + any active time effects
     const cssFilter = useMemo(() => {
         const parts = [];
         if (brightness !== 0) parts.push(`brightness(${(1 + brightness).toFixed(2)})`);
         if (contrast   !== 0) parts.push(`contrast(${(1 + contrast).toFixed(2)})`);
         if (saturation !== 0) parts.push(`saturate(${(1 + saturation).toFixed(2)})`);
+        const pf = effectPreset ? (PRESET_PREVIEW[effectPreset]?.filter ?? '') : '';
+        if (pf) parts.push(pf);
+        // Merge active time-effect filters
+        for (const eff of activeTimeEffects) {
+            const def = TIME_EFFECT_TYPES.find(t => t.id === eff.type);
+            if (def?.css?.filter) parts.push(def.css.filter);
+        }
         return parts.length ? parts.join(' ') : undefined;
-    }, [brightness, contrast, saturation]);
+    }, [brightness, contrast, saturation, effectPreset, activeTimeEffects]);
+
+    // CSS transform: full-clip preset + active time effects
+    const cssTransform = useMemo(() => {
+        // Shake animation overrides static transform
+        const hasShake = activeTimeEffects.some(e => TIME_EFFECT_TYPES.find(t => t.id === e.type)?.animation);
+        if (hasShake) return undefined; // animation handles transform
+        const parts = [];
+        const pt = effectPreset ? (PRESET_PREVIEW[effectPreset]?.transform ?? '') : '';
+        if (pt) parts.push(pt);
+        for (const eff of activeTimeEffects) {
+            const def = TIME_EFFECT_TYPES.find(t => t.id === eff.type);
+            if (def?.css?.transform) parts.push(def.css.transform);
+        }
+        return parts.join(' ') || undefined;
+    }, [effectPreset, activeTimeEffects]);
+
+    // CSS animation (shake)
+    const cssAnimation = useMemo(() => {
+        for (const eff of activeTimeEffects) {
+            const def = TIME_EFFECT_TYPES.find(t => t.id === eff.type);
+            if (def?.animation) return def.animation;
+        }
+        return undefined;
+    }, [activeTimeEffects]);
+
+    // Flash overlay: show white overlay when flash effect is active
+    const showFlash = useMemo(() =>
+        activeTimeEffects.some(e => TIME_EFFECT_TYPES.find(t => t.id === e.type)?.flashOverlay),
+        [activeTimeEffects]
+    );
+
+    // Vignette overlay (cinematic preset)
+    const showVignette = !!(effectPreset && PRESET_PREVIEW[effectPreset]?.vignette);
 
     // Load new src imperatively — avoids key-remount race condition with autoPlayRef
     useEffect(() => {
@@ -282,8 +419,26 @@ function MainPreview({ orderedClips, selectedClip, clipSettings, previewMode, on
     function handleTimeUpdate() {
         const v = videoRef.current;
         if (!v) return;
-        setCurTime(v.currentTime);
-        if (v.currentTime >= trimEnd) {
+        const ct = v.currentTime;
+        setCurTime(ct);
+
+        // Adjust playback rate when inside a speed-change time effect window
+        const clipRelT = ct - trimStart;
+        const speedEff = timeEffects.find(e => {
+            const def = TIME_EFFECT_TYPES.find(t => t.id === e.type);
+            return def?.speedMultiplier != null
+                && clipRelT >= (e.start_time ?? 0)
+                && clipRelT <= (e.end_time ?? 0);
+        });
+        const effMult   = speedEff
+            ? (TIME_EFFECT_TYPES.find(t => t.id === speedEff.type)?.speedMultiplier ?? 1.0)
+            : 1.0;
+        const targetRate = speed * effMult;
+        if (Math.abs(v.playbackRate - targetRate) > 0.01) {
+            v.playbackRate = targetRate;
+        }
+
+        if (ct >= trimEnd) {
             if (previewMode === 'sequence' && seqIndex < seqItems.length - 1) {
                 autoPlayRef.current = true;
                 setSeqIndex(i => i + 1);
@@ -312,12 +467,39 @@ function MainPreview({ orderedClips, selectedClip, clipSettings, previewMode, on
         if (clipId) onClipSelect(clipId);
     }
 
+    function handleEffectDragStart(e, effId) {
+        e.stopPropagation();
+        e.preventDefault();
+        const eff = timeEffects.find(ef => ef.id === effId);
+        if (!eff || !onUpdateEffects) return;
+        setSelectedEffId(effId);
+        setDraggingEff({ id: effId, startX: e.clientX, origStart: eff.start_time, origEnd: eff.end_time });
+    }
+
+    function handleEffectDragMove(e) {
+        if (!draggingEff || !onUpdateEffects || !effectTrackRef.current) return;
+        const trackWidth = effectTrackRef.current.getBoundingClientRect().width;
+        const clipSpan   = Math.max(trimEnd - trimStart, 0.01);
+        const secPerPx   = clipSpan / Math.max(1, trackWidth * trimWidthPct / 100);
+        const deltaSec   = (e.clientX - draggingEff.startX) * secPerPx;
+        const effDur     = draggingEff.origEnd - draggingEff.origStart;
+        const newStart   = +Math.max(0, Math.min(clipSpan - effDur, draggingEff.origStart + deltaSec)).toFixed(2);
+        const newEnd     = +(newStart + effDur).toFixed(2);
+        onUpdateEffects(timeEffects.map(ef =>
+            ef.id === draggingEff.id ? { ...ef, start_time: newStart, end_time: newEnd } : ef
+        ));
+    }
+
+    function handleEffectDragEnd() {
+        setDraggingEff(null);
+    }
+
     const trimRange    = Math.max(trimEnd - trimStart, 0.01);
     const progress     = Math.max(0, Math.min(1, (curTime - trimStart) / trimRange));
     const trimStartPct = (trimStart / duration) * 100;
     const trimWidthPct = ((trimEnd - trimStart) / duration) * 100;
     const playheadPct  = trimStartPct + trimWidthPct * progress;
-    const hasFx        = brightness !== 0 || contrast !== 0 || saturation !== 0;
+    const hasFx        = brightness !== 0 || contrast !== 0 || saturation !== 0 || effectPreset !== null || timeEffects.length > 0;
 
     const textSizeMap  = { sm: 'text-sm', md: 'text-xl', lg: 'text-3xl', xl: 'text-5xl' };
     const textPosMap   = { top: 'top-3', center: 'top-1/2 -translate-y-1/2', bottom: 'bottom-3' };
@@ -396,12 +578,32 @@ function MainPreview({ orderedClips, selectedClip, clipSettings, previewMode, on
                 <video
                     ref={videoRef}
                     className="w-full h-full object-contain"
-                    style={cssFilter ? { filter: cssFilter } : undefined}
+                    style={{
+                        ...(cssFilter    ? { filter:    cssFilter    } : {}),
+                        ...(cssTransform ? { transform: cssTransform } : {}),
+                        ...(cssAnimation ? { animation: cssAnimation } : {}),
+                    }}
                     onTimeUpdate={handleTimeUpdate}
                     onLoadedMetadata={handleLoaded}
                     preload="auto"
                     playsInline
                 />
+
+                {/* Flash overlay for flash time effects */}
+                {showFlash && (
+                    <div
+                        className="absolute inset-0 pointer-events-none bg-white"
+                        style={{ animation: 'ccFlash 0.3s ease-out forwards' }}
+                    />
+                )}
+
+                {/* Vignette overlay for cinematic preset preview */}
+                {showVignette && (
+                    <div
+                        className="absolute inset-0 pointer-events-none"
+                        style={{ boxShadow: 'inset 0 0 80px 20px rgba(0,0,0,0.65)' }}
+                    />
+                )}
 
                 {/* Card overlay for intro/outro */}
                 {activeCard && (
@@ -462,6 +664,58 @@ function MainPreview({ orderedClips, selectedClip, clipSettings, previewMode, on
                     <span className="text-violet-400">{fmtSec(curTime)}</span>
                     <span>{fmtSec(trimEnd)}</span>
                 </div>
+
+                {/* ── Draggable effect blocks track (only when effects exist) ── */}
+                {timeEffects.length > 0 && (
+                    <div
+                        ref={effectTrackRef}
+                        className="relative h-6 mb-1.5 rounded bg-gray-900/70 select-none overflow-hidden"
+                        onMouseMove={handleEffectDragMove}
+                        onMouseUp={handleEffectDragEnd}
+                        onMouseLeave={handleEffectDragEnd}
+                    >
+                        {/* Trim zone shading */}
+                        <div className="absolute top-0 h-full bg-white/5 pointer-events-none"
+                            style={{ left: `${trimStartPct}%`, width: `${trimWidthPct}%` }} />
+                        {/* Effect blocks */}
+                        {timeEffects.map((eff, i) => {
+                            const clipSpan = Math.max(trimEnd - trimStart, 0.01);
+                            const left  = trimStartPct + (Math.max(0, eff.start_time) / clipSpan) * trimWidthPct;
+                            const width = Math.max(2, (Math.min(eff.end_time, clipSpan) - Math.max(0, eff.start_time)) / clipSpan * trimWidthPct);
+                            const def   = TIME_EFFECT_TYPES.find(t => t.id === eff.type);
+                            const colorMap = { 'bg-yellow-400': '#facc15', 'bg-orange-400': '#fb923c', 'bg-emerald-400': '#34d399', 'bg-red-400': '#f87171', 'bg-sky-400': '#38bdf8', 'bg-blue-400': '#60a5fa', 'bg-red-500': '#ef4444', 'bg-fuchsia-500': '#d946ef', 'bg-yellow-300': '#fde047', 'bg-violet-400': '#a78bfa', 'bg-pink-400': '#f472b6' };
+                            const color   = colorMap[def?.dot ?? ''] ?? '#a78bfa';
+                            const isDragging = draggingEff?.id === eff.id;
+                            const isSelected = selectedEffId === eff.id;
+                            return (
+                                <div
+                                    key={eff.id ?? i}
+                                    className="absolute top-0.5 bottom-0.5 rounded flex items-center px-1 overflow-hidden"
+                                    style={{
+                                        left:            `${left}%`,
+                                        width:           `${width}%`,
+                                        backgroundColor: color + '44',
+                                        border:          `1px solid ${color + 'bb'}`,
+                                        cursor:          isDragging ? 'grabbing' : 'grab',
+                                        boxShadow:       isSelected ? `0 0 0 1.5px ${color}` : undefined,
+                                        zIndex:          isDragging ? 10 : undefined,
+                                    }}
+                                    onMouseDown={e => handleEffectDragStart(e, eff.id ?? i)}
+                                    title={`${def?.label ?? eff.type}  ${fmtSec(eff.start_time)} → ${fmtSec(eff.end_time)}\nDrag to reposition`}
+                                >
+                                    <span className="text-[8px] font-bold text-white/85 truncate leading-none pointer-events-none">
+                                        {def?.icon} {def?.label ?? eff.type}
+                                    </span>
+                                </div>
+                            );
+                        })}
+                        {/* Playhead line in effect track */}
+                        <div className="absolute top-0 h-full w-px bg-violet-400/60 pointer-events-none"
+                            style={{ left: `${playheadPct}%` }} />
+                    </div>
+                )}
+
+                {/* ── Scrub bar ── */}
                 <div
                     className="relative h-1.5 rounded-full bg-gray-800 cursor-pointer select-none"
                     onClick={handleScrubberSeek}
@@ -623,6 +877,82 @@ const CARD_ANIMATIONS = [
     ['reveal', 'Reveal'],
 ];
 
+// ─── Intro / outro templates ──────────────────────────────────────────────────
+
+const INTRO_TEMPLATES = [
+    { id: 'fire-scope-reveal',   label: 'Fire Scope',  gradient: 'from-red-950 to-gray-950',    dot: 'bg-orange-500'  },
+    { id: 'blue-energy-sweep',   label: 'Energy',      gradient: 'from-blue-950 to-gray-950',   dot: 'bg-cyan-500'    },
+    { id: 'neon-pulse-intro',    label: 'Neon Pulse',  gradient: 'from-purple-950 to-gray-950', dot: 'bg-fuchsia-500' },
+    { id: 'glitch-reveal',       label: 'Glitch',      gradient: 'from-gray-950 to-black',      dot: 'bg-emerald-400' },
+    { id: 'cinematic-shockwave', label: 'Cinematic',   gradient: 'from-yellow-950 to-gray-950', dot: 'bg-amber-400'   },
+];
+
+// ─── Clip-level effect presets ────────────────────────────────────────────────
+
+const EFFECT_PRESETS = [
+    { id: 'kill-impact',     label: 'Kill Impact',    dot: 'bg-red-500',     icon: '💥', desc: 'Hard zoom + shake + contrast burst. Best for kills & clutch moments.',    recommended: true  },
+    { id: 'headshot-focus',  label: 'Headshot Focus', dot: 'bg-orange-400',  icon: '🎯', desc: 'Deep punch-in zoom with warm highlights. Slow-mo feel for precision plays.', recommended: true  },
+    { id: 'flash-cut',       label: 'Flash Cut',      dot: 'bg-yellow-400',  icon: '⚡', desc: 'Blinding white flash on the cut — fast and loud.',                        recommended: false },
+    { id: 'motion-blur',     label: 'Motion Blur',    dot: 'bg-sky-400',     icon: '💨', desc: 'Speed blur smear through the action. Great for movement clips.',           recommended: false },
+    { id: 'cinematic-boost', label: 'Cinematic',      dot: 'bg-amber-400',   icon: '🎬', desc: 'High-contrast grade + deep vignette. Makes any clip look cinematic.',      recommended: false },
+    { id: 'neon-hype',       label: 'Neon Hype',      dot: 'bg-fuchsia-500', icon: '🌈', desc: 'Oversaturated neon pop. Perfect for montage highlight reels.',              recommended: false },
+];
+
+// ─── Style presets (visual grade, applies b/c/s + optional fx preset) ────────
+
+const STYLE_PRESETS = [
+    { id: 'cinematic', label: 'Cinematic', icon: '🎬', desc: 'Dark + vignette',          b: -0.08, c: 0.35, s: -0.30, fxPreset: 'cinematic-boost' },
+    { id: 'vibrant',   label: 'Vibrant',   icon: '✨', desc: 'Bright + punchy',           b: 0.08,  c: 0.15, s: 0.50,  fxPreset: null             },
+    { id: 'neon',      label: 'Neon',      icon: '🌈', desc: 'Oversaturated pop',         b: 0.05,  c: 0.25, s: 0.80,  fxPreset: 'neon-hype'      },
+    { id: 'heat',      label: 'Heat',      icon: '🔥', desc: 'Warm fire grade',            b: 0.06,  c: 0.20, s: 0.40,  fxPreset: null             },
+    { id: 'sharp',     label: 'Sharp',     icon: '⚡', desc: 'Ultra contrast',             b: 0.02,  c: 0.45, s: 0.20,  fxPreset: null             },
+    { id: 'moody',     label: 'Moody',     icon: '🌑', desc: 'Dark desaturated',          b: -0.10, c: 0.20, s: -0.50, fxPreset: null             },
+];
+
+// ─── Impact action definitions (used by QuickActionsBar) ─────────────────────
+
+const IMPACT_ACTIONS = [
+    { id: 'kill-impact',    label: 'Kill Impact',    icon: '💥', desc: 'Zoom + shake at each kill',         kind: 'timeEffect', effectTypes: ['zoom-hit', 'shake']    },
+    { id: 'headshot-focus', label: 'Headshot Focus', icon: '🎯', desc: 'Deep zoom + slow-mo feel',          kind: 'preset',     presetId:    'headshot-focus'         },
+    { id: 'flash-hit',      label: 'Flash Hit',      icon: '⚡', desc: 'White flash burst at each kill',    kind: 'timeEffect', effectTypes: ['flash']                },
+    { id: 'slow-mo-burst',  label: 'Slow Mo Burst',  icon: '🎬', desc: 'Short dramatic slowdown (0.5×) around each kill', kind: 'timeEffect', effectTypes: ['zoom-hit', 'slow-mo']  },
+];
+
+// ─── Time-range effect definitions ────────────────────────────────────────────
+
+const TIME_EFFECT_CATEGORIES = [
+    { id: 'impact',     label: 'Impact',    color: 'text-orange-400' },
+    { id: 'transition', label: 'Transition', color: 'text-sky-400'  },
+    { id: 'overlay',    label: 'Style',      color: 'text-pink-400' },
+];
+
+const TIME_EFFECT_TYPES = [
+    { id: 'flash',      label: 'Flash',         category: 'impact',     defaultDur: 0.3, dot: 'bg-yellow-400',  icon: '⚡', desc: 'Blinding white burst — mark a kill or clutch moment',  hasIntensity: false, flashOverlay: true,  css: { filter: 'brightness(4) contrast(1.5)' } },
+    { id: 'zoom-hit',   label: 'Zoom Hit',       category: 'impact',     defaultDur: 0.5, dot: 'bg-orange-400',  icon: '🔍', desc: 'Hard punch-in zoom — visible from a mile away',        hasIntensity: false, flashOverlay: false, css: { transform: 'scale(1.18)' } },
+    { id: 'shake',      label: 'Camera Shake',   category: 'impact',     defaultDur: 0.5, dot: 'bg-red-400',     icon: '📳', desc: 'Camera shake jolt — screams impact',                   hasIntensity: true,  flashOverlay: false, css: { transform: 'translate(5px,-3px) rotate(1.5deg)' }, animation: 'ccShake 0.08s steps(1) infinite' },
+    { id: 'glitch',     label: 'Glitch',         category: 'impact',     defaultDur: 0.4, dot: 'bg-emerald-400', icon: '📡', desc: 'Digital noise burst — raw chaotic energy',             hasIntensity: true,  flashOverlay: false, css: { filter: 'contrast(2.2) saturate(0.1) hue-rotate(180deg)', transform: 'translate(4px,0) scaleX(1.02)' } },
+    { id: 'blur-whip',  label: 'Blur Whip',      category: 'transition', defaultDur: 0.5, dot: 'bg-sky-400',     icon: '💨', desc: 'Motion blur smear — aggressive speed transition',      hasIntensity: false, flashOverlay: false, css: { filter: 'blur(10px) brightness(1.3)' } },
+    { id: 'slow-mo',    label: 'Slow Motion',    category: 'transition', defaultDur: 1.5, dot: 'bg-violet-400',  icon: '🎯', desc: 'Slows playback to 0.5× — dramatic slow-motion effect',  hasIntensity: false, flashOverlay: false, speedMultiplier: 0.5, css: { filter: 'brightness(1.15) contrast(1.3) saturate(0.8)', transform: 'scale(1.1)' } },
+    { id: 'neon-glow',  label: 'Neon Glow',      category: 'overlay',    defaultDur: 2.0, dot: 'bg-fuchsia-500', icon: '🌈', desc: 'Oversaturated neon pop — hype montage look',           hasIntensity: true,  flashOverlay: false, css: { filter: 'saturate(3) contrast(1.5) brightness(1.05)' } },
+    { id: 'fire',       label: 'Fire Grade',     category: 'overlay',    defaultDur: 2.0, dot: 'bg-red-500',     icon: '🔥', desc: 'Warm fire color grade — intense and aggressive',       hasIntensity: true,  flashOverlay: false, css: { filter: 'saturate(2.2) contrast(1.25) brightness(1.08) sepia(0.3)' } },
+    { id: 'speed-up',   label: 'Fast Forward',   category: 'transition', defaultDur: 0.6, dot: 'bg-cyan-400',    icon: '⏩', desc: 'Speeds up to 2× — fast-forward through the action',     hasIntensity: false, flashOverlay: false, speedMultiplier: 2.0, css: { filter: 'blur(6px) brightness(1.4) contrast(1.15)', transform: 'scaleX(1.04)' }, animation: 'ccSpeedLines 0.12s steps(1) infinite' },
+    { id: 'rgb-split',  label: 'RGB Split',      category: 'impact',     defaultDur: 0.4, dot: 'bg-rose-400',    icon: '🌈', desc: 'Chromatic aberration glitch — raw energy',             hasIntensity: false, flashOverlay: false, css: { filter: 'saturate(2.5) contrast(1.6) hue-rotate(15deg)', transform: 'translate(3px,0) scaleX(1.01)' } },
+];
+
+/**
+ * CSS-equivalent of each effect preset for live in-editor preview.
+ * These are intentionally exaggerated so users can see the effect clearly.
+ * Actual FFmpeg output will be calibrated but directionally similar.
+ */
+const PRESET_PREVIEW = {
+    'kill-impact':     { filter: 'brightness(1.35) contrast(1.5) saturate(1.35)', transform: 'scale(1.16)', vignette: true  },
+    'headshot-focus':  { filter: 'brightness(1.15) contrast(1.6) saturate(0.85)', transform: 'scale(1.22)', vignette: true  },
+    'flash-cut':       { filter: 'brightness(3.5)  contrast(1.3)',                transform: '',             vignette: false },
+    'motion-blur':     { filter: 'blur(8px) brightness(1.2)',                     transform: 'scaleX(1.05)', vignette: false },
+    'cinematic-boost': { filter: 'saturate(1.45) contrast(1.35) brightness(0.82)', transform: '',            vignette: true  },
+    'neon-hype':       { filter: 'saturate(3.2) contrast(1.5) brightness(1.05)',  transform: '',             vignette: false },
+};
+
 // ─── Built-in music library ───────────────────────────────────────────────────
 
 const BUILT_IN_TRACKS = [
@@ -723,7 +1053,8 @@ function StoryboardCard({ clip, index, isSelected, settings, onSelect, onRemove,
     const hasText    = textOv?.enabled && textOv?.text?.trim();
     const hasEffects = (settings?.brightness ?? 0) !== 0 ||
                        (settings?.contrast   ?? 0) !== 0 ||
-                       (settings?.saturation ?? 0) !== 0;
+                       (settings?.saturation ?? 0) !== 0 ||
+                       (settings?.effects?.length ?? 0) > 0;
     const renderedDur = ((trimEnd - trimStart) / speed).toFixed(1);
 
     return (
@@ -803,6 +1134,17 @@ function StoryboardCard({ clip, index, isSelected, settings, onSelect, onRemove,
                             AI
                         </span>
                     )}
+                    {settings?.effect_preset && (() => {
+                        const p = EFFECT_PRESETS.find(x => x.id === settings.effect_preset);
+                        return (
+                            <span
+                                title={`FX: ${p?.label ?? settings.effect_preset}`}
+                                className="h-4 px-1 flex items-center justify-center rounded bg-pink-500/15 text-pink-400 text-[9px] font-bold"
+                            >
+                                {p?.icon ?? 'FX'}
+                            </span>
+                        );
+                    })()}
                 </div>
             </div>
 
@@ -825,13 +1167,24 @@ function StoryboardCard({ clip, index, isSelected, settings, onSelect, onRemove,
 function TransitionDivider({ transition }) {
     const type = transition?.type     ?? 'cut';
     const dur  = transition?.duration ?? 0.5;
-    const labelMap = { cut: 'Cut', fade: `Fade · ${dur}s`, crossfade: `Crossfade · ${dur}s`, 'smooth-fade': `Smooth · ${dur}s` };
-    const label = labelMap[type] ?? 'Cut';
+    const labelMap = {
+        cut: 'Cut',
+        fade: `Fade · ${dur}s`,
+        crossfade: `Crossfade · ${dur}s`,
+        'smooth-fade': `Smooth · ${dur}s`,
+        dissolve: `Dissolve · ${dur}s`,
+        'wipe-left': `Wipe ← · ${dur}s`,
+        'wipe-right': `Wipe → · ${dur}s`,
+        'slide-left': `Slide ← · ${dur}s`,
+        pixelize: `Pixelize · ${dur}s`,
+    };
+    const label = labelMap[type] ?? type;
+    const isXfade    = ['dissolve', 'wipe-left', 'wipe-right', 'slide-left', 'pixelize'].includes(type);
     const isAnimated = type !== 'cut';
     return (
         <div className="flex items-center gap-2 px-1 py-1">
             <div className="h-px flex-1 bg-white/5" />
-            <span className={`text-[10px] font-medium ${isAnimated ? 'text-violet-500' : 'text-gray-700'}`}>
+            <span className={`text-[10px] font-medium ${isXfade ? 'text-cyan-500' : isAnimated ? 'text-violet-500' : 'text-gray-700'}`}>
                 {label}
             </span>
             <div className="h-px flex-1 bg-white/5" />
@@ -842,10 +1195,14 @@ function TransitionDivider({ transition }) {
 // ─── Right panel: Clip inspector (tabbed) ─────────────────────────────────────
 
 const SPEEDS      = [[0.5, '0.5×'], [1, '1×'], [1.25, '1.25×'], [1.5, '1.5×'], [2, '2×']];
-const INSP_TABS   = [{ id: 'trim', label: 'Trim' }, { id: 'audio', label: 'Audio' }, { id: 'visual', label: 'Visual' }, { id: 'text', label: 'Text' }];
+const INSP_TABS   = [{ id: 'trim', label: 'Trim' }, { id: 'audio', label: 'Audio' }, { id: 'visual', label: 'Visual' }, { id: 'text', label: 'Text' }, { id: 'fx', label: 'FX' }];
 
 function ClipSettingsPanel({ clip, settings, onChange }) {
     const [activeTab, setActiveTab] = useState('trim');
+    const [addingEffect,       setAddingEffect]       = useState(false);
+    const [editingEffectId,    setEditingEffectId]    = useState(null);
+    const [draftEffect,        setDraftEffect]        = useState({ type: 'flash', start_time: 0, end_time: 0.5, intensity: 0.8 });
+    const [showAllPresets,     setShowAllPresets]     = useState(false);
 
     const duration   = clip.duration;
     const trimStart  = settings.trim_start  ?? 0;
@@ -860,11 +1217,58 @@ function ClipSettingsPanel({ clip, settings, onChange }) {
     const saturation = settings.saturation  ?? 0;
     const textOv     = settings.text_overlay ?? { enabled: false, text: '', size: 'md', position: 'bottom', color: 'white', animation: 'none' };
     const transition = settings.transition  ?? { type: 'cut', duration: 0.5 };
+    const effects    = settings.effects     ?? [];
     const hasEffects = brightness !== 0 || contrast !== 0 || saturation !== 0;
+
+    const clipLen = Math.max(0.1, trimEnd - trimStart);
 
     function set(key, value)           { onChange(key, value); }
     function setTextOv(key, value)     { onChange('text_overlay', { ...textOv, [key]: value }); }
     function setTransition(key, value) { onChange('transition', { ...transition, [key]: value }); }
+
+    function openAddEffect(preset = null) {
+        const mid = clipLen / 2;
+        const defaultType = preset?.type ?? 'flash';
+        const def = TIME_EFFECT_TYPES.find(t => t.id === defaultType) ?? TIME_EFFECT_TYPES[0];
+        const dur = preset?.dur ?? def.defaultDur;
+        setDraftEffect({ type: defaultType, start_time: +(mid - dur / 2).toFixed(2), end_time: +(mid + dur / 2).toFixed(2), intensity: 0.8 });
+        setAddingEffect(true);
+        setEditingEffectId(null);
+    }
+
+    function openEditEffect(eff) {
+        setDraftEffect({ type: eff.type, start_time: eff.start_time, end_time: eff.end_time, intensity: eff.intensity ?? 0.8 });
+        setEditingEffectId(eff.id);
+        setAddingEffect(false);
+    }
+
+    function commitEffect() {
+        const s = Math.max(0, Math.min(draftEffect.start_time, clipLen - 0.1));
+        const e = Math.max(s + 0.1, Math.min(draftEffect.end_time, clipLen));
+        const entry = { ...draftEffect, start_time: +s.toFixed(2), end_time: +e.toFixed(2) };
+        if (editingEffectId) {
+            onChange('effects', effects.map(ef => ef.id === editingEffectId ? { ...ef, ...entry } : ef));
+            setEditingEffectId(null);
+        } else {
+            onChange('effects', [...effects, { ...entry, id: uid() }]);
+            setAddingEffect(false);
+        }
+    }
+
+    function cancelEffectForm() { setAddingEffect(false); setEditingEffectId(null); }
+
+    function removeEffect(id) {
+        onChange('effects', effects.filter(ef => ef.id !== id));
+        if (editingEffectId === id) setEditingEffectId(null);
+    }
+
+    function quickApply(mode) {
+        let start, end;
+        if (mode === 'full') { start = 0; end = clipLen; }
+        else if (mode === 'burst') { const mid = clipLen / 2; start = +(mid - 0.5).toFixed(2); end = +(mid + 0.5).toFixed(2); }
+        else { const mid = clipLen / 2; const def = TIME_EFFECT_TYPES.find(t => t.id === draftEffect.type) ?? TIME_EFFECT_TYPES[0]; const d = def.defaultDur / 2; start = +(mid - d).toFixed(2); end = +(mid + d).toFixed(2); }
+        setDraftEffect(prev => ({ ...prev, start_time: Math.max(0, start), end_time: Math.min(clipLen, end) }));
+    }
 
     return (
         <div>
@@ -947,11 +1351,21 @@ function ClipSettingsPanel({ clip, settings, onChange }) {
 
                     <div>
                         <p className="text-xs text-gray-600 mb-2">Outgoing Transition</p>
+                        {/* Standard (fade-to-black) transitions */}
                         <ButtonGroup
                             options={[['cut','Cut'],['fade','Fade'],['crossfade','X-Fade'],['smooth-fade','Smooth']]}
                             value={transition.type}
                             onChange={v => setTransition('type', v)}
                         />
+                        {/* xfade transitions — composited in the export pipeline */}
+                        <div className="mt-2">
+                            <p className="text-[10px] text-gray-700 mb-1.5 uppercase tracking-wide font-semibold">Premium xfade</p>
+                            <ButtonGroup
+                                options={[['dissolve','Dissolve'],['wipe-left','Wipe ←'],['wipe-right','Wipe →'],['slide-left','Slide ←'],['pixelize','Pixelize']]}
+                                value={transition.type}
+                                onChange={v => setTransition('type', v)}
+                            />
+                        </div>
                         {transition.type !== 'cut' && (
                             <div className="mt-2">
                                 <SliderRow label="Duration" value={transition.duration ?? 0.5}
@@ -1176,6 +1590,337 @@ function ClipSettingsPanel({ clip, settings, onChange }) {
                     )}
                 </div>
             )}
+
+            {/* ── FX tab ── */}
+            {activeTab === 'fx' && (
+                <div className="space-y-5">
+
+                    {/* ── Recommended presets ── */}
+                    <div>
+                        <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs text-gray-600">Recommended</p>
+                            {settings.effect_preset && (
+                                <button onClick={() => set('effect_preset', null)} className="text-[10px] text-gray-600 hover:text-gray-400 transition-colors">
+                                    Clear
+                                </button>
+                            )}
+                        </div>
+                        <div className="space-y-1.5">
+                            {EFFECT_PRESETS.filter(p => p.recommended).map(p => {
+                                const active = settings.effect_preset === p.id;
+                                const pv     = PRESET_PREVIEW[p.id] ?? {};
+                                return (
+                                    <button
+                                        key={p.id}
+                                        onClick={() => set('effect_preset', active ? null : p.id)}
+                                        className={[
+                                            'w-full flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all duration-150 overflow-hidden relative',
+                                            active
+                                                ? 'bg-violet-600/15 border-violet-500/40'
+                                                : 'bg-gray-800/50 border-white/8 hover:border-white/20 hover:bg-gray-800',
+                                        ].join(' ')}
+                                    >
+                                        {/* Mini thumbnail strip */}
+                                        {clip.thumbnail_url && (
+                                            <div className="h-10 w-16 rounded-lg overflow-hidden shrink-0 relative">
+                                                <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover"
+                                                    style={{ filter: pv.filter || undefined, transform: pv.transform || undefined }} />
+                                                {pv.vignette && <div className="absolute inset-0" style={{ boxShadow: 'inset 0 0 12px 3px rgba(0,0,0,0.8)' }} />}
+                                            </div>
+                                        )}
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-1.5">
+                                                <span className="text-sm leading-none">{p.icon}</span>
+                                                <p className={`text-xs font-semibold ${active ? 'text-violet-300' : 'text-white'}`}>{p.label}</p>
+                                                <span className="text-[8px] font-bold bg-orange-500 text-white px-1 py-0.5 rounded uppercase tracking-wide">Hot</span>
+                                            </div>
+                                            <p className="mt-0.5 text-[10px] text-gray-600">{p.desc.split('—')[0].trim()}</p>
+                                        </div>
+                                        {active && <span className="text-[10px] font-bold text-violet-400 shrink-0">ON</span>}
+                                    </button>
+                                );
+                            })}
+                        </div>
+
+                        {/* Active preset description (when a non-recommended preset is active) */}
+                        {(() => {
+                            const ap = settings.effect_preset ? EFFECT_PRESETS.find(p => p.id === settings.effect_preset) : null;
+                            if (!ap || ap.recommended) return null;
+                            return (
+                                <p className="mt-2 text-[10px] text-violet-400/70 leading-relaxed">
+                                    {ap.icon}{' '}
+                                    <span className="font-semibold">{ap.label}</span>
+                                    {' · '}{ap.desc.split('—')[0].trim()}
+                                </p>
+                            );
+                        })()}
+
+                        {/* All presets accordion */}
+                        <button
+                            onClick={() => setShowAllPresets(v => !v)}
+                            className="mt-3 w-full flex items-center justify-between text-[11px] font-semibold text-gray-500 hover:text-gray-300 transition-colors"
+                        >
+                            <span>All Effects ({EFFECT_PRESETS.length})</span>
+                            <svg className={`h-3 w-3 transition-transform ${showAllPresets ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+                            </svg>
+                        </button>
+                        {showAllPresets && (
+                            <div className="mt-2 grid grid-cols-2 gap-1.5">
+                                {EFFECT_PRESETS.map(p => {
+                                    const active = settings.effect_preset === p.id;
+                                    const pv     = PRESET_PREVIEW[p.id] ?? {};
+                                    return (
+                                        <button
+                                            key={p.id}
+                                            onClick={() => set('effect_preset', active ? null : p.id)}
+                                            className={[
+                                                'rounded-xl border transition-all duration-150 flex flex-col overflow-hidden text-left',
+                                                active ? 'border-violet-500/50 ring-1 ring-violet-500/30' : 'border-white/8 hover:border-white/20',
+                                            ].join(' ')}
+                                        >
+                                            <div className="w-full relative bg-gray-900 overflow-hidden" style={{ aspectRatio: '16/9' }}>
+                                                {clip.thumbnail_url
+                                                    ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover"
+                                                        style={{ filter: pv.filter || undefined, transform: pv.transform || undefined }} />
+                                                    : <div className="w-full h-full bg-gray-800" style={{ filter: pv.filter || undefined }} />}
+                                                {pv.vignette && <div className="absolute inset-0" style={{ boxShadow: 'inset 0 0 30px 8px rgba(0,0,0,0.75)' }} />}
+                                                {active && <div className="absolute inset-0 bg-violet-500/10 border-2 border-violet-500/40" />}
+                                            </div>
+                                            <div className={`px-2.5 py-2 ${active ? 'bg-violet-600/10' : 'bg-gray-900/60'}`}>
+                                                <div className="flex items-center gap-1.5">
+                                                    <span className="text-sm leading-none">{p.icon}</span>
+                                                    <p className={`text-[11px] font-semibold ${active ? 'text-violet-300' : 'text-gray-300'}`}>{p.label}</p>
+                                                </div>
+                                                <p className="mt-0.5 text-[9px] text-gray-600 leading-snug">{p.desc.split('—')[0].trim()}</p>
+                                            </div>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+
+                    <SectionDivider />
+
+                    {/* ── Moment FX ── */}
+                    <div>
+                        <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs text-gray-600">
+                                Moment FX
+                                {effects.length > 0 && (
+                                    <span className="ml-1.5 text-[10px] bg-violet-500/20 text-violet-400 px-1.5 py-0.5 rounded-full">{effects.length}</span>
+                                )}
+                            </p>
+                            {!addingEffect && editingEffectId === null && (
+                                <button
+                                    onClick={() => openAddEffect()}
+                                    className="text-[11px] font-semibold text-violet-400 hover:text-violet-300 transition-colors"
+                                >
+                                    + Add
+                                </button>
+                            )}
+                        </div>
+                        <p className="text-[10px] text-gray-700 mb-2.5">Trigger effects at specific moments in this clip.</p>
+
+                        {/* Quick-apply shortcuts (shown when form is open) */}
+                        {(addingEffect || editingEffectId !== null) && (
+                            <div className="flex gap-1 mb-3 flex-wrap">
+                                <p className="w-full text-[10px] text-gray-700 mb-1">Place at:</p>
+                                <button onClick={() => quickApply('highlight')}
+                                    className="px-2 py-1 rounded-md text-[10px] font-semibold bg-gray-800 border border-white/8 text-gray-400 hover:text-white hover:border-white/20 transition-colors">
+                                    Midpoint
+                                </button>
+                                <button onClick={() => quickApply('full')}
+                                    className="px-2 py-1 rounded-md text-[10px] font-semibold bg-gray-800 border border-white/8 text-gray-400 hover:text-white hover:border-white/20 transition-colors">
+                                    Full clip
+                                </button>
+                                <button onClick={() => quickApply('burst')}
+                                    className="px-2 py-1 rounded-md text-[10px] font-semibold bg-gray-800 border border-white/8 text-gray-400 hover:text-white hover:border-white/20 transition-colors">
+                                    Short burst
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Add / Edit form */}
+                        {(addingEffect || editingEffectId !== null) && (() => {
+                            const defType = TIME_EFFECT_TYPES.find(t => t.id === draftEffect.type) ?? TIME_EFFECT_TYPES[0];
+                            return (
+                                <div className="rounded-xl border border-violet-500/30 bg-violet-500/5 p-3 mb-3 space-y-3">
+                                    {/* Effect type picker by category */}
+                                    {TIME_EFFECT_CATEGORIES.map(cat => {
+                                        const catTypes = TIME_EFFECT_TYPES.filter(t => t.category === cat.id);
+                                        return (
+                                            <div key={cat.id}>
+                                                <p className={`text-[10px] font-semibold uppercase tracking-widest mb-1.5 ${cat.color}`}>{cat.label}</p>
+                                                <div className="flex flex-wrap gap-1">
+                                                    {catTypes.map(t => (
+                                                        <button
+                                                            key={t.id}
+                                                            onClick={() => setDraftEffect(prev => ({ ...prev, type: t.id }))}
+                                                            className={[
+                                                                'flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-semibold border transition-all',
+                                                                draftEffect.type === t.id
+                                                                    ? 'bg-violet-600/25 border-violet-500/50 text-violet-300'
+                                                                    : 'bg-gray-800/60 border-white/8 text-gray-500 hover:text-gray-300 hover:border-white/20',
+                                                            ].join(' ')}
+                                                        >
+                                                            <span className="text-xs leading-none">{t.icon}</span>
+                                                            {t.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+
+                                    {/* Time range */}
+                                    <div>
+                                        <p className="text-[10px] text-gray-600 mb-1.5">Time range (within trimmed clip)</p>
+                                        <div className="flex items-center gap-2">
+                                            <div className="flex-1">
+                                                <p className="text-[9px] text-gray-700 mb-0.5">Start (s)</p>
+                                                <input
+                                                    type="number" min={0} max={clipLen} step={0.1}
+                                                    value={draftEffect.start_time}
+                                                    onChange={e => setDraftEffect(prev => ({ ...prev, start_time: +parseFloat(e.target.value).toFixed(2) }))}
+                                                    className="w-full bg-gray-900 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-500/50"
+                                                />
+                                            </div>
+                                            <span className="text-gray-700 text-xs mt-4">→</span>
+                                            <div className="flex-1">
+                                                <p className="text-[9px] text-gray-700 mb-0.5">End (s)</p>
+                                                <input
+                                                    type="number" min={0} max={clipLen} step={0.1}
+                                                    value={draftEffect.end_time}
+                                                    onChange={e => setDraftEffect(prev => ({ ...prev, end_time: +parseFloat(e.target.value).toFixed(2) }))}
+                                                    className="w-full bg-gray-900 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-violet-500/50"
+                                                />
+                                            </div>
+                                        </div>
+                                        {/* Visual range bar */}
+                                        <div className="mt-2 h-2 rounded-full bg-gray-800 relative overflow-hidden">
+                                            <div
+                                                className="absolute top-0 h-full rounded-full bg-violet-500/50"
+                                                style={{
+                                                    left:  `${(Math.max(0, draftEffect.start_time) / clipLen) * 100}%`,
+                                                    width: `${(Math.max(0, draftEffect.end_time - draftEffect.start_time) / clipLen) * 100}%`,
+                                                }}
+                                            />
+                                        </div>
+                                        <p className="mt-1 text-[10px] text-gray-700">
+                                            Duration: <span className="text-gray-500 font-mono">{Math.max(0, draftEffect.end_time - draftEffect.start_time).toFixed(2)}s</span>
+                                            {' / '}clip: <span className="text-gray-500 font-mono">{clipLen.toFixed(1)}s</span>
+                                        </p>
+                                    </div>
+
+                                    {/* Intensity (only for effects that support it) */}
+                                    {defType.hasIntensity && (
+                                        <SliderRow
+                                            label="Intensity"
+                                            value={draftEffect.intensity ?? 0.8}
+                                            min={0} max={1} step={0.05}
+                                            onChange={v => setDraftEffect(prev => ({ ...prev, intensity: v }))}
+                                            display={v => `${Math.round(v * 100)}%`}
+                                        />
+                                    )}
+
+                                    {/* Preview chip */}
+                                    <div className="rounded-lg border border-white/10 overflow-hidden bg-gray-900">
+                                        <div className="relative" style={{ aspectRatio: '16/9' }}>
+                                            {clip.thumbnail_url
+                                                ? <img src={clip.thumbnail_url} alt="" className="w-full h-full object-cover"
+                                                    style={defType.css ?? {}} />
+                                                : <div className="w-full h-full bg-gray-800" style={defType.css ?? {}} />}
+                                            {defType.flashOverlay && (
+                                                <div className="absolute inset-0 bg-white opacity-60" />
+                                            )}
+                                        </div>
+                                        <div className="px-2.5 py-1.5 flex items-center gap-2">
+                                            <span className="text-sm leading-none">{defType.icon}</span>
+                                            <div>
+                                                <p className="text-[10px] font-semibold text-gray-300">{defType.label}</p>
+                                                <p className="text-[9px] text-gray-600">{defType.desc}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Commit / cancel */}
+                                    <div className="flex gap-2 pt-1">
+                                        <button
+                                            onClick={commitEffect}
+                                            className="flex-1 py-1.5 rounded-lg text-xs font-semibold bg-violet-600/30 border border-violet-500/40 text-violet-300 hover:bg-violet-600/40 transition-colors"
+                                        >
+                                            {editingEffectId ? 'Save' : 'Add'}
+                                        </button>
+                                        <button
+                                            onClick={cancelEffectForm}
+                                            className="flex-1 py-1.5 rounded-lg text-xs font-semibold bg-gray-800/60 border border-white/8 text-gray-500 hover:text-gray-300 transition-colors"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })()}
+
+                        {/* Applied effects list */}
+                        {effects.length > 0 ? (
+                            <div className="space-y-1.5">
+                                {[...effects].sort((a, b) => a.start_time - b.start_time).map(eff => {
+                                    const def = TIME_EFFECT_TYPES.find(t => t.id === eff.type);
+                                    const isEditing = editingEffectId === eff.id;
+                                    return (
+                                        <div
+                                            key={eff.id}
+                                            className={[
+                                                'flex items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors',
+                                                isEditing ? 'border-violet-500/40 bg-violet-500/8' : 'border-white/8 bg-gray-800/50',
+                                            ].join(' ')}
+                                        >
+                                            <span className="text-sm leading-none shrink-0">{def?.icon ?? '✨'}</span>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-[11px] font-semibold text-white">{def?.label ?? eff.type}</p>
+                                                <p className="text-[10px] text-gray-600 font-mono">
+                                                    {eff.start_time.toFixed(2)}s → {eff.end_time.toFixed(2)}s
+                                                    {def?.hasIntensity && eff.intensity != null && (
+                                                        <span className="ml-1.5 text-gray-700">· {Math.round((eff.intensity ?? 0.8) * 100)}%</span>
+                                                    )}
+                                                </p>
+                                            </div>
+                                            <button
+                                                onClick={() => openEditEffect(eff)}
+                                                className="h-5 w-5 flex items-center justify-center rounded text-gray-600 hover:text-violet-400 transition-colors"
+                                                title="Edit"
+                                            >
+                                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" />
+                                                </svg>
+                                            </button>
+                                            <button
+                                                onClick={() => removeEffect(eff.id)}
+                                                className="h-5 w-5 flex items-center justify-center rounded text-gray-600 hover:text-red-400 transition-colors"
+                                                title="Remove"
+                                            >
+                                                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : !addingEffect && editingEffectId === null && (
+                            <div className="text-center py-5 text-[11px] text-gray-700 border border-dashed border-white/8 rounded-xl">
+                                No moment effects yet.<br />
+                                <button onClick={() => openAddEffect()} className="mt-1.5 text-violet-500 hover:text-violet-400 font-semibold transition-colors">
+                                    Add your first effect
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -1184,8 +1929,8 @@ function ClipSettingsPanel({ clip, settings, onChange }) {
 
 function CardToggleBlock({
     label, headerSubtitle, enabled,
-    text, subtitleText, duration, bgStyle, animation,
-    onToggle, onTextChange, onSubtitleChange, onDurationChange, onBgStyleChange, onAnimationChange,
+    templateId, text, subtitleText, duration, bgStyle, animation,
+    onToggle, onTemplateChange, onTextChange, onSubtitleChange, onDurationChange, onBgStyleChange, onAnimationChange,
 }) {
     return (
         <div className="rounded-xl border border-white/8 overflow-hidden">
@@ -1212,6 +1957,30 @@ function CardToggleBlock({
 
             {enabled && (
                 <div className="px-4 pb-4 pt-3 space-y-3 border-t border-white/5 bg-gray-900/40">
+                    {/* Template */}
+                    <div>
+                        <label className="block text-xs text-gray-600 mb-1.5">Template</label>
+                        <div className="grid grid-cols-5 gap-1">
+                            {INTRO_TEMPLATES.map(t => {
+                                const active = (templateId ?? '') === t.id;
+                                return (
+                                    <button
+                                        key={t.id}
+                                        onClick={() => onTemplateChange?.(active ? null : t.id)}
+                                        className={[
+                                            'py-2 rounded-lg text-[10px] font-semibold border transition-all duration-150 flex flex-col items-center gap-1',
+                                            active
+                                                ? 'bg-violet-600/20 border-violet-500/50 text-violet-300'
+                                                : 'bg-gray-800/50 border-white/8 text-gray-500 hover:border-white/20 hover:text-gray-300',
+                                        ].join(' ')}
+                                    >
+                                        <span className={`h-2 w-2 rounded-full ${t.dot} ${active ? 'opacity-100' : 'opacity-40'}`} />
+                                        {t.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
                     {/* Title */}
                     <div>
                         <label className="block text-xs text-gray-600 mb-1.5">Title</label>
@@ -1366,12 +2135,14 @@ function ProjectSettingsPanel({ titleCard, onTitleCardChange, projectSettings, o
                 label="Intro card"
                 headerSubtitle="Branded opening screen"
                 enabled={titleCard.enabled}
+                templateId={titleCard.template_id ?? null}
                 text={titleCard.text ?? ''}
                 subtitleText={titleCard.subtitle ?? ''}
                 duration={titleCard.duration ?? 3}
                 bgStyle={titleCard.bg_style ?? 'clean-fade'}
                 animation={titleCard.animation ?? 'fade'}
                 onToggle={() => onTitleCardChange('enabled', !titleCard.enabled)}
+                onTemplateChange={v => onTitleCardChange('template_id', v)}
                 onTextChange={v => onTitleCardChange('text', v)}
                 onSubtitleChange={v => onTitleCardChange('subtitle', v)}
                 onDurationChange={v => onTitleCardChange('duration', v)}
@@ -1384,12 +2155,14 @@ function ProjectSettingsPanel({ titleCard, onTitleCardChange, projectSettings, o
                 label="Outro card"
                 headerSubtitle="Closing screen at the end"
                 enabled={outroCard.enabled}
+                templateId={outroCard.template_id ?? null}
                 text={outroCard.text ?? ''}
                 subtitleText={outroCard.subtitle ?? ''}
                 duration={outroCard.duration ?? 3}
                 bgStyle={outroCard.bg_style ?? 'clean-fade'}
                 animation={outroCard.animation ?? 'fade'}
                 onToggle={() => setOutro('enabled', !outroCard.enabled)}
+                onTemplateChange={v => setOutro('template_id', v)}
                 onTextChange={v => setOutro('text', v)}
                 onSubtitleChange={v => setOutro('subtitle', v)}
                 onDurationChange={v => setOutro('duration', v)}
@@ -1668,6 +2441,194 @@ function ExportPanel({ clipCount, exportStatus, outputUrl, errorMessage, saving,
     );
 }
 
+// ─── Quick Actions bar (sits below the video preview in the centre column) ────
+
+function QuickActionsBar({ selectedClip, settings, onUpdateSetting, onBatchUpdate, onUpdateEffects, onFocusMusic }) {
+    const [activePanel, setActivePanel] = useState(null); // 'impact' | 'style' | null
+    const [killCount,   setKillCount]   = useState(1);
+
+    // Reset kill count when clip changes — seed from label heuristic
+    useEffect(() => {
+        setKillCount(getKillCount(selectedClip));
+    }, [selectedClip?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const hasClip      = !!selectedClip;
+    const effectPreset = settings?.effect_preset ?? null;
+    const effects      = settings?.effects      ?? [];
+
+    function toggle(panel) { setActivePanel(p => p === panel ? null : panel); }
+
+    function applyEnhance() {
+        if (!hasClip) return;
+        onUpdateSetting('effect_preset', effectPreset === 'cinematic-boost' ? null : 'cinematic-boost');
+    }
+
+    function applyImpactAction(action) {
+        if (!hasClip) return;
+        if (action.kind === 'preset') {
+            onUpdateSetting('effect_preset', effectPreset === action.presetId ? null : action.presetId);
+            return;
+        }
+        // Time-based: place one set of effects per kill moment
+        const offsets = getKillOffsets(selectedClip, settings, killCount);
+        const newEffs   = offsets.flatMap(hl =>
+            action.effectTypes.map(type => {
+                const def = TIME_EFFECT_TYPES.find(t => t.id === type);
+                const dur = def?.defaultDur ?? 0.5;
+                return {
+                    id:         uid(),
+                    type,
+                    start_time: +Math.max(0, hl - dur / 2).toFixed(2),
+                    end_time:   +(hl + dur / 2).toFixed(2),
+                    intensity:  0.8,
+                    source:     'auto_highlight',
+                };
+            })
+        );
+        onUpdateEffects([...effects, ...newEffs]);
+    }
+
+    function applyStyle(style) {
+        if (!hasClip) return;
+        onBatchUpdate({
+            brightness: style.b,
+            contrast:   style.c,
+            saturation: style.s,
+            effect_preset: style.fxPreset !== undefined ? style.fxPreset : effectPreset,
+        });
+    }
+
+    function applyHighlight() {
+        if (!hasClip) return;
+        const hl   = getClipHighlightOffset(selectedClip, settings);
+        const zoom = { id: uid(), type: 'zoom-hit', start_time: +Math.max(0, hl - 0.3).toFixed(2),  end_time: +(hl + 0.3).toFixed(2),  intensity: 0.8, source: 'auto_highlight' };
+        const slo  = { id: uid(), type: 'slow-mo',  start_time: +Math.max(0, hl - 0.75).toFixed(2), end_time: +(hl + 0.75).toFixed(2), intensity: 0.8, source: 'auto_highlight' };
+        onUpdateEffects([...effects, zoom, slo]);
+    }
+
+    const BTNS = [
+        { id: 'enhance',   icon: '✨', label: 'Enhance',   active: effectPreset === 'cinematic-boost', disabled: !hasClip, action: applyEnhance        },
+        { id: 'impact',    icon: '💥', label: 'Impact',    active: activePanel === 'impact',           disabled: !hasClip, action: () => toggle('impact') },
+        { id: 'style',     icon: '🎬', label: 'Style',     active: activePanel === 'style',            disabled: !hasClip, action: () => toggle('style')  },
+        { id: 'highlight', icon: '🎯', label: 'Highlight', active: false,                              disabled: !hasClip, action: applyHighlight       },
+        { id: 'music',     icon: '🎵', label: 'Music',     active: false,                              disabled: false,    action: onFocusMusic         },
+    ];
+
+    return (
+        <div className="shrink-0 border-b border-white/5 bg-gray-950/90 backdrop-blur-sm">
+            {/* ── Button row ── */}
+            <div className="flex items-stretch px-3 py-2 gap-1.5">
+                {!hasClip && (
+                    <p className="text-[10px] text-gray-700 self-center pr-2 shrink-0 italic">
+                        Select a clip →
+                    </p>
+                )}
+                {BTNS.map(btn => (
+                    <button
+                        key={btn.id}
+                        onClick={btn.action}
+                        disabled={btn.disabled}
+                        className={[
+                            'flex-1 flex flex-col items-center justify-center gap-0.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-150 border',
+                            btn.active
+                                ? 'bg-violet-600/25 border-violet-500/50 text-violet-300'
+                                : btn.disabled
+                                    ? 'border-transparent text-gray-700 cursor-default'
+                                    : 'bg-gray-800/50 border-white/6 text-gray-400 hover:bg-gray-800/80 hover:text-white hover:border-white/15',
+                        ].join(' ')}
+                    >
+                        <span className="text-base leading-none">{btn.icon}</span>
+                        {btn.label}
+                    </button>
+                ))}
+            </div>
+
+            {/* ── Impact panel ── */}
+            {activePanel === 'impact' && hasClip && (
+                <div className="px-3 pb-3 border-t border-white/5">
+                    {/* Kill count control */}
+                    <div className="flex items-center justify-between mt-2.5 mb-2">
+                        <p className="text-[10px] text-gray-600">Choose an impact style:</p>
+                        <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-gray-600">Kills:</span>
+                            <button
+                                onClick={() => setKillCount(k => Math.max(1, k - 1))}
+                                className="h-5 w-5 rounded bg-gray-800 border border-white/10 text-gray-400 hover:text-white hover:border-white/25 text-xs font-bold leading-none flex items-center justify-center"
+                            >−</button>
+                            <span className="text-[11px] font-bold text-white w-4 text-center">{killCount}</span>
+                            <button
+                                onClick={() => setKillCount(k => Math.min(5, k + 1))}
+                                className="h-5 w-5 rounded bg-gray-800 border border-white/10 text-gray-400 hover:text-white hover:border-white/25 text-xs font-bold leading-none flex items-center justify-center"
+                            >+</button>
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                        {IMPACT_ACTIONS.map(action => {
+                            const isActive = action.kind === 'preset' && effectPreset === action.presetId;
+                            return (
+                                <button
+                                    key={action.id}
+                                    onClick={() => { applyImpactAction(action); if (action.kind === 'timeEffect') toggle('impact'); }}
+                                    className={[
+                                        'flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-all duration-150',
+                                        isActive
+                                            ? 'bg-violet-600/20 border-violet-500/40 text-white'
+                                            : 'bg-gray-800/60 border-white/8 text-gray-300 hover:border-white/20 hover:bg-gray-800',
+                                    ].join(' ')}
+                                >
+                                    <span className="text-lg leading-none shrink-0">{action.icon}</span>
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-[11px] font-semibold truncate">{action.label}</p>
+                                        <p className="text-[9px] text-gray-600 truncate">{action.desc}</p>
+                                    </div>
+                                    {isActive && <span className="text-[9px] font-bold text-violet-400 shrink-0">ON</span>}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
+            {/* ── Style panel ── */}
+            {activePanel === 'style' && hasClip && (
+                <div className="px-3 pb-3 border-t border-white/5">
+                    <p className="text-[10px] text-gray-600 mt-2.5 mb-2">Choose a visual style:</p>
+                    <div className="grid grid-cols-3 gap-1.5">
+                        {STYLE_PRESETS.map(style => {
+                            const isActive = style.fxPreset !== null && effectPreset === style.fxPreset;
+                            return (
+                                <button
+                                    key={style.id}
+                                    onClick={() => applyStyle(style)}
+                                    className={[
+                                        'flex flex-col items-center gap-1 rounded-xl border px-2 py-2.5 text-center transition-all duration-150',
+                                        isActive
+                                            ? 'bg-violet-600/20 border-violet-500/40'
+                                            : 'bg-gray-800/60 border-white/8 hover:border-white/20 hover:bg-gray-800',
+                                    ].join(' ')}
+                                >
+                                    <span className="text-xl leading-none">{style.icon}</span>
+                                    <p className="text-[10px] font-semibold text-white">{style.label}</p>
+                                    <p className="text-[9px] text-gray-600 leading-tight">{style.desc}</p>
+                                </button>
+                            );
+                        })}
+                    </div>
+                    {/* Reset visual grade */}
+                    {(settings?.brightness !== 0 || settings?.contrast !== 0 || settings?.saturation !== 0) && (
+                        <button
+                            onClick={() => onBatchUpdate({ brightness: 0, contrast: 0, saturation: 0 })}
+                            className="mt-2 text-[10px] text-gray-600 hover:text-gray-400 transition-colors w-full text-center"
+                        >
+                            Reset style
+                        </button>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 // ─── Main editor page ─────────────────────────────────────────────────────────
 
 export default function MontageEditor({ video, clips, project }) {
@@ -1690,6 +2651,7 @@ export default function MontageEditor({ video, clips, project }) {
     const [outputUrl,      setOutputUrl]      = useState(project?.output_url ?? null);
     const [errorMessage,   setErrorMessage]   = useState(project?.error_message ?? null);
     const [saving,         setSaving]         = useState(false);
+    const [saveOk,         setSaveOk]         = useState(false);
 
     // ── Editor UI state ───────────────────────────────────────────────────────
     const [selectedStoryboardId, setSelectedStoryboardId] = useState(null);
@@ -1697,6 +2659,7 @@ export default function MontageEditor({ video, clips, project }) {
     const [dragOverIndex,        setDragOverIndex]         = useState(null);
     const [titleEditing,         setTitleEditing]          = useState(false);
     const [previewMode,          setPreviewMode]           = useState('clip');
+    const [mobileTab,            setMobileTab]             = useState('edit'); // 'clips' | 'edit' | 'inspect'
 
     const pollRef = useRef(null);
 
@@ -1723,6 +2686,13 @@ export default function MontageEditor({ video, clips, project }) {
         setClipSettings(prev => ({
             ...prev,
             [clipId]: { ...prev[clipId], [key]: value },
+        }));
+    }, []);
+
+    const batchUpdateClipSettings = useCallback((clipId, updates) => {
+        setClipSettings(prev => ({
+            ...prev,
+            [clipId]: { ...prev[clipId], ...updates },
         }));
     }, []);
 
@@ -1817,6 +2787,7 @@ export default function MontageEditor({ video, clips, project }) {
     // ── Save only ─────────────────────────────────────────────────────────────
     async function handleSave() {
         setSaving(true);
+        setSaveOk(false);
         const payload = {
             video_id:         video.id,
             title:            projectTitle,
@@ -1832,6 +2803,8 @@ export default function MontageEditor({ video, clips, project }) {
                 const data = await apiFetch('/montage-projects', { method: 'POST', body: JSON.stringify(payload) });
                 setProjectId(data.project.id);
             }
+            setSaveOk(true);
+            setTimeout(() => setSaveOk(false), 2500);
         } catch (err) {
             setErrorMessage(err.message);
         } finally {
@@ -1899,9 +2872,14 @@ export default function MontageEditor({ video, clips, project }) {
                             <button
                                 onClick={handleSave}
                                 disabled={saving || isExporting}
-                                className="text-xs font-medium text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 border border-white/8 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40"
+                                className={[
+                                    'text-xs font-medium px-3 py-1.5 rounded-lg transition-all border disabled:opacity-40',
+                                    saveOk
+                                        ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                                        : 'text-gray-400 hover:text-white bg-gray-800 hover:bg-gray-700 border-white/8',
+                                ].join(' ')}
                             >
-                                Save
+                                {saving ? 'Saving…' : saveOk ? 'Saved ✓' : 'Save'}
                             </button>
 
                             <button
@@ -1931,15 +2909,15 @@ export default function MontageEditor({ video, clips, project }) {
                 </div>
 
                 {/* ── Editor body ───────────────────────────────────────────── */}
-                <div className="flex-1 grid grid-cols-[280px_1fr_300px] overflow-hidden">
+                <div className="flex-1 grid sm:grid-cols-[280px_1fr_300px] overflow-hidden pb-14 sm:pb-0">
 
                     {/* LEFT: Clip picker */}
-                    <div className="border-r border-white/5 overflow-y-auto bg-gray-900/30">
+                    <div className={`${mobileTab === 'clips' ? 'flex' : 'hidden'} sm:flex flex-col border-r border-white/5 overflow-y-auto bg-gray-900/30`}>
                         <ClipPicker clips={clips} selectedIds={selectedIds} onAdd={addClip} />
                     </div>
 
                     {/* CENTRE: Preview + Storyboard */}
-                    <div className="flex flex-col overflow-hidden">
+                    <div className={`${mobileTab === 'edit' ? 'flex' : 'hidden'} sm:flex flex-col overflow-hidden`}>
                         <MainPreview
                             orderedClips={orderedClips}
                             selectedClip={selectedClip}
@@ -1949,6 +2927,15 @@ export default function MontageEditor({ video, clips, project }) {
                             onClipSelect={setSelectedStoryboardId}
                             titleCard={titleCard}
                             outroCard={projectSettings.outro_card ?? { enabled: false }}
+                            onUpdateEffects={(effs) => selectedClip && updateClipSetting(selectedClip.id, 'effects', effs)}
+                        />
+                        <QuickActionsBar
+                            selectedClip={selectedClip}
+                            settings={selectedClip ? (clipSettings[selectedClip.id] ?? {}) : null}
+                            onUpdateSetting={(k, v) => selectedClip && updateClipSetting(selectedClip.id, k, v)}
+                            onBatchUpdate={(updates) => selectedClip && batchUpdateClipSettings(selectedClip.id, updates)}
+                            onUpdateEffects={(effs) => selectedClip && updateClipSetting(selectedClip.id, 'effects', effs)}
+                            onFocusMusic={() => setSelectedStoryboardId(null)}
                         />
                         <div className="flex-1 overflow-y-auto px-6 py-5">
                         <div className="mb-4 flex items-center justify-between">
@@ -2059,7 +3046,7 @@ export default function MontageEditor({ video, clips, project }) {
                     </div>
 
                     {/* RIGHT: Inspector + export */}
-                    <div className="border-l border-white/5 overflow-y-auto bg-gray-900/30">
+                    <div className={`${mobileTab === 'inspect' ? 'flex' : 'hidden'} sm:flex flex-col border-l border-white/5 overflow-y-auto bg-gray-900/30`}>
                         <div className="p-4 space-y-6">
 
                             {selectedClip ? (
@@ -2098,6 +3085,27 @@ export default function MontageEditor({ video, clips, project }) {
                         </div>
                     </div>
 
+                </div>
+
+                {/* ── Mobile bottom tab bar ── */}
+                <div className="sm:hidden fixed bottom-0 inset-x-0 z-50 flex border-t border-white/10 bg-gray-950">
+                    {[
+                        { id: 'clips',   icon: '📋', label: 'Clips'    },
+                        { id: 'edit',    icon: '✂️',  label: 'Edit'     },
+                        { id: 'inspect', icon: '🔧', label: 'Settings' },
+                    ].map(tab => (
+                        <button
+                            key={tab.id}
+                            onClick={() => setMobileTab(tab.id)}
+                            className={[
+                                'flex-1 flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] font-semibold transition-colors',
+                                mobileTab === tab.id ? 'text-violet-400' : 'text-gray-600',
+                            ].join(' ')}
+                        >
+                            <span className="text-lg leading-none">{tab.icon}</span>
+                            {tab.label}
+                        </button>
+                    ))}
                 </div>
             </div>
         </>
