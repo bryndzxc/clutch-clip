@@ -1,5 +1,6 @@
 import { usePage, router } from '@inertiajs/react';
 import { useState } from 'react';
+import FeedbackModal from '../FeedbackModal';
 
 const NAV = [
     { key: 'upload', label: 'Dashboard', href: '/upload' },
@@ -65,6 +66,8 @@ function Avatar({ user }) {
 export default function DashboardHeader({ active = 'upload' }) {
     const { auth } = usePage().props;
     const user = auth?.user;
+    const isAdmin = user?.is_admin ?? false;
+    const [feedbackOpen, setFeedbackOpen] = useState(false);
 
     function handleLogout(event) {
         event.preventDefault();
@@ -100,6 +103,18 @@ export default function DashboardHeader({ active = 'upload' }) {
                                 {label}
                             </a>
                         ))}
+                        {isAdmin && (
+                            <a
+                                href="/admin"
+                                className={`rounded-lg px-3.5 py-1.5 text-sm font-medium transition-colors ${
+                                    active === 'admin'
+                                        ? 'bg-violet-500/20 text-violet-300 shadow-sm shadow-violet-500/25'
+                                        : 'text-violet-400 hover:bg-violet-500/10 hover:text-violet-300'
+                                }`}
+                            >
+                                Admin
+                            </a>
+                        )}
                     </nav>
 
                     <div className="flex shrink-0 items-center gap-2.5">
@@ -108,6 +123,17 @@ export default function DashboardHeader({ active = 'upload' }) {
                         <span className="hidden max-w-[140px] truncate text-sm text-gray-400 sm:block">
                             {user?.name}
                         </span>
+
+                        <button
+                            onClick={() => setFeedbackOpen(true)}
+                            className="hidden sm:flex items-center gap-1 ml-1 rounded-md border border-white/10 px-2.5 py-1 text-xs text-gray-500 transition-colors hover:border-white/20 hover:text-gray-300"
+                            title="Send feedback"
+                        >
+                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+                            </svg>
+                            Feedback
+                        </button>
 
                         <button
                             onClick={handleLogout}
@@ -138,6 +164,11 @@ export default function DashboardHeader({ active = 'upload' }) {
                     ))}
                 </div>
             </nav>
+            <FeedbackModal
+                open={feedbackOpen}
+                onClose={() => setFeedbackOpen(false)}
+                defaultPage={typeof window !== 'undefined' ? window.location.pathname : ''}
+            />
         </>
     );
 }

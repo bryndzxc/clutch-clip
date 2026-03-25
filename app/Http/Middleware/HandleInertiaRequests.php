@@ -13,12 +13,16 @@ class HandleInertiaRequests extends Middleware
     {
         return array_merge(parent::share($request), [
             'appName' => config('app.name'),
+            'flash'   => [
+                'feedback_sent' => $request->session()->get('feedback_sent'),
+            ],
             'auth'    => [
                 'user' => $request->user() ? [
-                    'id'     => $request->user()->id,
-                    'name'   => $request->user()->name,
-                    'email'  => $request->user()->email,
-                    'avatar' => $request->user()->avatar,
+                    'id'       => $request->user()->id,
+                    'name'     => $request->user()->name,
+                    'email'    => $request->user()->email,
+                    'avatar'   => $request->user()->avatar,
+                    'is_admin' => $request->user()->isAdmin(),
                 ] : null,
             ],
         ]);

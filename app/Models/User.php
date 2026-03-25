@@ -52,6 +52,7 @@ class User extends Authenticatable
         'google_id',
         'avatar',
         'settings',
+        'is_admin',
     ];
 
     /**
@@ -75,6 +76,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password'          => 'hashed',
             'settings'          => 'array',
+            'is_admin'          => 'boolean',
         ];
     }
 
@@ -86,5 +88,15 @@ class User extends Authenticatable
     public function montages(): HasMany
     {
         return $this->hasMany(Montage::class);
+    }
+
+    public function feedbackReports(): HasMany
+    {
+        return $this->hasMany(FeedbackReport::class);
+    }
+
+    public function isAdmin(): bool
+    {
+        return (bool) $this->is_admin;
     }
 }

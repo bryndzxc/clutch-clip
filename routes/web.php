@@ -7,6 +7,8 @@ use App\Http\Controllers\MontageController;
 use App\Http\Controllers\MontageProjectController;
 use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\SocialAuthController;
+use App\Http\Controllers\AdminController;
+use App\Http\Controllers\FeedbackController;
 use App\Http\Controllers\VideoController;
 use Illuminate\Support\Facades\Route;
 
@@ -81,4 +83,13 @@ Route::middleware('auth')->group(function () {
     Route::get('/montages/{montage}', [MontageController::class, 'show'])->name('montages.show');
     Route::get('/montages/{montage}/stream', [MontageController::class, 'stream'])->name('montages.stream');
     Route::delete('/montages/{montage}', [MontageController::class, 'destroy'])->name('montages.destroy');
+
+    Route::post('/feedback', [FeedbackController::class, 'store'])->name('feedback.store');
+});
+
+Route::middleware(['auth', 'is_admin'])->prefix('admin')->name('admin.')->group(function () {
+    Route::get('/',         [AdminController::class, 'dashboard'])->name('dashboard');
+    Route::get('/users',    [AdminController::class, 'users'])->name('users');
+    Route::get('/feedback', [AdminController::class, 'feedback'])->name('feedback');
+    Route::patch('/feedback/{report}', [AdminController::class, 'updateFeedback'])->name('feedback.update');
 });
