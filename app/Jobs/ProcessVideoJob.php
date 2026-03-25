@@ -56,11 +56,13 @@ class ProcessVideoJob implements ShouldQueue
             ?? \App\Models\User::DEFAULT_SETTINGS;
 
         // Run the Python highlight detection script
+        $pythonBin = env('PYTHON_BIN', 'python3');
         $pythonScript = base_path('python/process_video.py');
         $command = sprintf(
-            'python %s --input %s --output-dir %s --thumbnails-dir %s'
+            '%s %s --input %s --output-dir %s --thumbnails-dir %s'
             . ' --clip-count %d --pre-roll %d --post-roll %d --merge-gap %d --min-score %d'
             . ' --quality %s --resolution %s --aspect-ratio %s',
+            escapeshellarg($pythonBin),
             escapeshellarg($pythonScript),
             escapeshellarg($videoPath),
             escapeshellarg($clipsDir),
