@@ -36,7 +36,7 @@ class SettingsController extends Controller
             'merge_gap'         => ['required', 'integer', 'min:0', 'max:60'],
             'min_score'         => ['required', 'integer', 'min:0', 'max:100'],
             'output_quality'    => ['required', 'string', 'in:standard,high,smaller'],
-            'resolution'        => ['required', 'string', 'in:720p,1080p'],
+            'resolution'        => ['required', 'string', 'in:low,720p'],
             'aspect_ratio'      => ['required', 'string', 'in:original,vertical'],
             'auto_delete_hours' => ['required', 'integer', 'in:24,48,168'],
             'name'              => ['required', 'string', 'max:255'],
@@ -48,7 +48,7 @@ class SettingsController extends Controller
         // Save display name separately
         $user->update(['name' => $validated['name']]);
 
-        // Save all processing/output settings as JSON
+        // Save all processing/output settings as JSON.
         $settings = collect($validated)->except('name')->all();
         $user->update(['settings' => $settings]);
 

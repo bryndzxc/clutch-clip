@@ -46,7 +46,8 @@ class CutClipsJob implements ShouldQueue
 
         $settings = User::find($video->user_id)?->getSettings() ?? User::DEFAULT_SETTINGS;
         [$crf, $preset] = $this->qualityParams($settings['output_quality'] ?? 'high');
-        $vfFilter = $this->buildVfFilter($settings['resolution'] ?? '1080p', $settings['aspect_ratio'] ?? 'original');
+        $resolution = $settings['resolution'] ?? '720p';
+        $vfFilter   = $this->buildVfFilter($resolution, $settings['aspect_ratio'] ?? 'original');
 
         // Purge stale clip records from any previous (failed/retried) run
         Clip::where('video_id', $video->id)->delete();
@@ -121,8 +122,9 @@ class CutClipsJob implements ShouldQueue
     private function buildVfFilter(string $resolution, string $aspectRatio): string
     {
         $height = match ($resolution) {
-            '720p'  => 720,
-            default => 1080,
+            '720p' => 720,
+            'low'  => 480,
+            default => 720,  // unknown value → safe fallback
         };
 
         return $aspectRatio === 'vertical'

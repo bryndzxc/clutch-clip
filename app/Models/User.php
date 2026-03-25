@@ -25,7 +25,7 @@ class User extends Authenticatable
         'merge_gap'         => 5,     // gap (s) below which adjacent clips merge
         'min_score'         => 50,    // minimum intensity score (0–100)
         'output_quality'    => 'high',     // standard | high | smaller
-        'resolution'        => '1080p',    // 720p | 1080p
+        'resolution'        => '720p',     // low | 720p
         'aspect_ratio'      => 'original', // original | vertical
         'auto_delete_hours' => 168,        // 24 | 48 | 168 (7 days)
     ];

@@ -5,7 +5,7 @@ Legacy mode (all-in-one, backwards compatible):
     python process_video.py --input /path/to/video.mp4 --output-dir /path/to/clips/
                             [--clip-count 5] [--pre-roll 3] [--post-roll 3]
                             [--merge-gap 5] [--min-score 50]
-                            [--quality high] [--resolution 1080p] [--aspect-ratio original]
+                            [--quality high] [--resolution 720p] [--aspect-ratio original]
 
 Optimized mode (detection only, PHP jobs handle cutting + thumbnails):
     python process_video.py --analysis-video /path/analysis.mp4
@@ -71,8 +71,9 @@ QUALITY_PRESETS = {
 # ──────────────────────────────────────────────────────────────────────────────
 
 RESOLUTION_MAP = {
-    '720p':  720,
-    '1080p': 1080,
+    'low':  480,   # fast processing, smaller files
+    '720p': 720,   # standard quality
+    # '1080p' intentionally excluded
 }
 
 
@@ -401,7 +402,7 @@ def main():
 
     # ── Output settings (legacy mode only) ────────────────────────────────────
     parser.add_argument("--quality",      default="high",     choices=["standard", "high", "smaller"])
-    parser.add_argument("--resolution",   default="1080p",    choices=["720p", "1080p"])
+    parser.add_argument("--resolution",   default="720p",     choices=["low", "720p"])
     parser.add_argument("--aspect-ratio", default="original", choices=["original", "vertical"])
 
     args = parser.parse_args()
@@ -432,7 +433,7 @@ def main():
     quality_cfg   = QUALITY_PRESETS.get(args.quality, QUALITY_PRESETS["high"])
     crf           = quality_cfg["crf"]
     preset        = quality_cfg["preset"]
-    output_height = RESOLUTION_MAP.get(args.resolution, 1080)
+    output_height = RESOLUTION_MAP.get(args.resolution, 720)  # unknown value → 720p fallback
 
     if args.aspect_ratio == "vertical":
         vf_filter = f"crop=ih*9/16:ih,scale=-2:{output_height}"

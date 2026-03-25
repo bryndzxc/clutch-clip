@@ -89,7 +89,7 @@ class ProcessVideoJob implements ShouldQueue
             (int) $settings['merge_gap'],
             (int) $settings['min_score'],
             escapeshellarg($settings['output_quality']),
-            escapeshellarg($settings['resolution']),
+            escapeshellarg(in_array($settings['resolution'] ?? '', ['low', '720p']) ? $settings['resolution'] : '720p'),
             escapeshellarg($settings['aspect_ratio']),
         );
 

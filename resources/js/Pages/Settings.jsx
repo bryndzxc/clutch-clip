@@ -273,16 +273,16 @@ function OutputSettings({ data, setData }) {
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Resolution</p>
                 <div className="grid grid-cols-2 gap-2.5">
                     <OptionCard
+                        selected={data.resolution === 'low'}
+                        onClick={() => setData('resolution', 'low')}
+                        title="Low (Faster)"
+                        desc="480p — quickest processing, smallest files."
+                    />
+                    <OptionCard
                         selected={data.resolution === '720p'}
                         onClick={() => setData('resolution', '720p')}
                         title="720p"
-                        desc="HD — smaller output files."
-                    />
-                    <OptionCard
-                        selected={data.resolution === '1080p'}
-                        onClick={() => setData('resolution', '1080p')}
-                        title="1080p"
-                        desc="Full HD — sharper clips."
+                        desc="Balanced quality and speed."
                         badge="Default"
                     />
                 </div>
