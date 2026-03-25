@@ -62,7 +62,7 @@ FRAME_SAMPLE_ANALYSIS = 10
 
 QUALITY_PRESETS = {
     'standard': {'crf': 28, 'preset': 'medium'},
-    'high':     {'crf': 20, 'preset': 'slow'},
+    'high':     {'crf': 20, 'preset': 'medium'},
     'smaller':  {'crf': 35, 'preset': 'fast'},
 }
 
@@ -167,11 +167,19 @@ def compute_motion_scores(
     frame_idx  = 0
 
     while True:
-        ret, frame = cap.read()
+        if frame_idx % frame_sample == 0:
+            # Full decode — we need the pixel data for this frame.
+            ret, frame = cap.read()
+        else:
+            # grab() advances the demuxer position without decoding pixel data.
+            # ~8–10× cheaper than read() for H.264; critical when frame_sample > 1.
+            ret  = cap.grab()
+            frame = None
+
         if not ret:
             break
 
-        if frame_idx % frame_sample == 0:
+        if frame is not None:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
             if not pre_scaled:

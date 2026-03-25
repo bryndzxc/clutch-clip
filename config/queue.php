@@ -40,7 +40,9 @@ return [
             'connection' => env('DB_QUEUE_CONNECTION'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
-            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 660), // must exceed job $timeout (600s)
+            // Must exceed the longest job $timeout in the codebase.
+            // CutClipsJob = 1800s — use 1980 (1800 + 10% buffer).
+            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 1980),
             'after_commit' => false,
         ],
 
@@ -66,10 +68,17 @@ return [
 
         'redis' => [
             'driver' => 'redis',
-            'connection' => env('REDIS_QUEUE_CONNECTION', 'default'),
+            // Use the dedicated 'queue' Redis connection (DB 2) to isolate queue
+            // keys from default operations and the cache (DB 1).
+            // Set REDIS_QUEUE_CONNECTION=default to share DB 0 if preferred.
+            'connection' => env('REDIS_QUEUE_CONNECTION', 'queue'),
             'queue' => env('REDIS_QUEUE', 'default'),
-            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 660), // must exceed job $timeout (600s)
-            'block_for' => null,
+            // Must exceed the longest job $timeout in the codebase.
+            // CutClipsJob = 1800s — use 1980 (1800 + 10% buffer).
+            'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 1980),
+            // block_for: 0 = blpop (blocking pop, worker sleeps until job arrives).
+            // More efficient than polling; null would use lpop instead.
+            'block_for' => 0,
             'after_commit' => false,
         ],
 

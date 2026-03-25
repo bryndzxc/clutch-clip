@@ -115,7 +115,7 @@ class CutClipsJob implements ShouldQueue
         return match ($quality) {
             'standard' => [28, 'medium'],
             'smaller'  => [35, 'fast'],
-            default    => [20, 'slow'],   // 'high'
+            default    => [20, 'medium'],  // 'high'
         };
     }
 

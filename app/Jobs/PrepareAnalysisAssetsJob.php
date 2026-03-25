@@ -39,33 +39,43 @@ class PrepareAnalysisAssetsJob implements ShouldQueue
         $analysisVideo = "{$analysisDir}/analysis.mp4";
         $analysisAudio = "{$analysisDir}/audio.wav";
 
-        // ── Pass 1: Low-res silent analysis video ─────────────────────────────
-        // 640px wide, ultrafast encode — only used for OpenCV frame diffs.
-        // -an: no audio stream needed in the analysis video.
-        if (!$this->runFfmpeg([
+        // ── Single-pass: produce both outputs in one FFmpeg invocation ────────
+        // Reading the source once halves disk I/O vs two sequential passes.
+        //
+        // Output 1: 640px silent analysis video for OpenCV frame diffs.
+        //   -map 0:v:0  — explicit video stream mapping
+        //   -an         — no audio in this output
+        //
+        // Output 2: mono 16 kHz WAV for audio RMS scoring.
+        //   -map 0:a:0? — optional audio mapping; '?' makes it non-fatal when
+        //                 the source has no audio stream (silent gameplay captures).
+        //   -vn         — no video in this output
+        //
+        // We do NOT rely solely on the exit code to determine audio success —
+        // file_exists() is the authoritative check, because FFmpeg may exit 0
+        // even when the optional audio stream was absent and the WAV was skipped.
+        $this->runFfmpeg([
             '-y', '-i', $source,
+            // Output 1: low-res silent analysis video
+            '-map', '0:v:0',
             '-vf', 'scale=640:-2',
             '-c:v', 'libx264', '-crf', '28', '-preset', 'ultrafast',
             '-an',
             $analysisVideo,
-        ])) {
+            // Output 2: mono 16 kHz WAV (optional — skipped if no audio stream)
+            '-map', '0:a:0?',
+            '-vn', '-ac', '1', '-ar', '16000', '-acodec', 'pcm_s16le',
+            $analysisAudio,
+        ]);
+
+        if (!file_exists($analysisVideo)) {
             $this->failVideo($video, 'FFmpeg failed to generate analysis video.');
             return;
         }
 
-        // ── Pass 2: Mono 16 kHz WAV for audio RMS scoring ─────────────────────
-        // -vn: no video needed in the audio pass.
-        if (!$this->runFfmpeg([
-            '-y', '-i', $source,
-            '-vn',
-            '-ac', '1',
-            '-ar', '16000',
-            '-acodec', 'pcm_s16le',
-            $analysisAudio,
-        ])) {
-            // Non-fatal: audio extraction can fail for silent videos.
-            // DetectHighlightsJob will use motion-only mode.
-            Log::warning("[PrepareAnalysisAssetsJob] Video #{$video->id}: audio extraction failed — continuing without audio.");
+        if (!file_exists($analysisAudio)) {
+            // Non-fatal: silent videos produce no WAV. DetectHighlightsJob falls back to motion-only mode.
+            Log::warning("[PrepareAnalysisAssetsJob] Video #{$video->id}: audio extraction yielded no file — continuing without audio.");
             $analysisAudio = null;
         }
 

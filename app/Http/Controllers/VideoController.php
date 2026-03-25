@@ -137,8 +137,22 @@ class VideoController extends Controller
             }
         }
 
-        // Prepare destination file
-        $ext      = strtolower(pathinfo($originalName, PATHINFO_EXTENSION)) ?: 'mp4';
+        // Validate the file extension before touching the assembled file.
+        $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+
+        if (!in_array($ext, ['mp4', 'mkv', 'webm', 'avi', 'mov', 'ts', 'flv'], true)) {
+            // Clean up chunks that are already on disk.
+            foreach (glob("{$chunkDir}/chunk_*") ?: [] as $leftover) {
+                @unlink($leftover);
+            }
+            @rmdir($chunkDir);
+
+            return response()->json([
+                'message' => 'Unsupported file type. Please upload an MP4, MKV, WebM, AVI, or MOV file.',
+                'errors'  => ['video' => ['Unsupported file type.']],
+            ], 422);
+        }
+
         $filename = Str::uuid() . '.' . $ext;
         $tempPath = config('clutchclip.temp_upload_dir') . '/' . $filename;
         $absPath  = storage_path('app/' . $tempPath);
