@@ -38,7 +38,14 @@ class DetectHighlightsJob implements ShouldQueue
 
         $settings  = User::find($video->user_id)?->getSettings() ?? User::DEFAULT_SETTINGS;
         $pythonBin = config('services.python.bin', 'python3');
-        $script    = base_path('python/process_video.py');
+
+        // Validate the configured binary before use; fall back to system python3
+        if (!file_exists($pythonBin) || !is_executable($pythonBin)) {
+            Log::warning("[DetectHighlightsJob] Video #{$video->id}: python binary '{$pythonBin}' not found or not executable — falling back to 'python3'.");
+            $pythonBin = 'python3';
+        }
+
+        $script = base_path('python/process_video.py');
 
         $cmd = [
             $pythonBin, $script,
@@ -63,9 +70,12 @@ class DetectHighlightsJob implements ShouldQueue
             $cmd[] = (string) $video->duration;
         }
 
-        Log::info("[DetectHighlightsJob] Video #{$video->id}: running Python detect-only.");
+        Log::info("[DetectHighlightsJob] Video #{$video->id}: running Python detect-only. binary={$pythonBin}");
 
-        $result = Process::timeout(580)->run(array_map('escapeshellarg', $cmd));
+        // Process::run() with an array uses proc_open directly (no shell).
+        // Do NOT wrap args with escapeshellarg() — that would add literal quotes
+        // to the binary path, causing "not found" errors on the executing OS.
+        $result = Process::timeout(580)->path(base_path())->run($cmd);
 
         if (!$result->successful()) {
             $this->failVideo($video, 'Highlight detection failed: ' . substr($result->errorOutput(), 0, 500));

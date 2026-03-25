@@ -659,8 +659,9 @@ export default function Results({ video, initialClips = [], relatedProjects = []
 
                     {/* ── States ───────────────────────────────────────── */}
 
-                    {/* Processing */}
-                    {PROCESSING_STATUSES.has(status) && (
+                    {/* Processing — show for ANY non-terminal state so new pipeline
+                        stages (or unexpected statuses) never leave the page blank. */}
+                    {!isTerminal && (
                         <ProcessingView status={status} stageLabel={stageLabel} video={video} />
                     )}
 
