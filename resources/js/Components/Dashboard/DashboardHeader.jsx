@@ -75,9 +75,15 @@ export default function DashboardHeader({ active = 'upload' }) {
         <>
             <header className="sticky top-0 z-40 border-b border-white/5 bg-gray-950/90 backdrop-blur-md">
                 <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-                    <a href="/upload" className="shrink-0 text-xl font-bold tracking-tight">
-                        <span className="text-violet-400">Clutch</span>
-                        <span className="text-white">Clip</span>
+                    <a href="/upload" className="shrink-0 flex items-center">
+                        <picture>
+                            <source srcSet="/storage/light_version_logo.png" media="(prefers-color-scheme: light)" />
+                            <img
+                                src="/storage/main_logo.png"
+                                alt="ClutchClip"
+                                className="h-7 w-auto object-contain"
+                            />
+                        </picture>
                     </a>
 
                     <nav className="hidden items-center gap-1 md:flex">

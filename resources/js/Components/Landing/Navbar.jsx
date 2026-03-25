@@ -11,19 +11,15 @@ export default function Navbar({ onOpenAuthModal }) {
     return (
         <nav className="fixed inset-x-0 top-0 z-50 border-b border-white/8 bg-gray-950/70 backdrop-blur-xl">
             <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-4">
-                <a href="/" className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/30 to-cyan-400/20 ring-1 ring-white/10">
-                        <span className="text-sm font-semibold text-white">CC</span>
-                    </div>
-                    <div>
-                        <p className="text-lg font-semibold tracking-tight text-white">
-                            <span className="text-violet-300">Clutch</span>
-                            Clip
-                        </p>
-                        <p className="hidden text-[11px] uppercase tracking-[0.25em] text-slate-500 sm:block">
-                            AI montage studio
-                        </p>
-                    </div>
+                <a href="/" className="flex items-center">
+                    <picture>
+                        <source srcSet="/storage/light_version_logo.png" media="(prefers-color-scheme: light)" />
+                        <img
+                            src="/storage/main_logo.png"
+                            alt="ClutchClip"
+                            className="h-8 w-auto object-contain"
+                        />
+                    </picture>
                 </a>
 
                 <div className="hidden items-center gap-8 md:flex">

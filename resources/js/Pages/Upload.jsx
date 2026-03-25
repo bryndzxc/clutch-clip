@@ -2,6 +2,8 @@ import { Head, router } from '@inertiajs/react';
 import { useState, useRef } from 'react';
 import DashboardHeader from '../Components/Dashboard/DashboardHeader';
 import ResumeProjectsPanel from '../Components/Projects/ResumeProjectsPanel';
+import OnboardingModal from '../Components/OnboardingModal';
+import Tooltip from '../Components/Tooltip';
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 function StatusBadge({ status }) {
@@ -160,6 +162,7 @@ export default function Upload({ recentVideos = [], recentProjects = [] }) {
     return (
         <>
             <Head title="Dashboard — ClutchClip" />
+            <OnboardingModal />
             <div className="min-h-screen bg-gray-950 text-white">
 
                 <DashboardHeader active="upload" />
@@ -205,6 +208,7 @@ export default function Upload({ recentVideos = [], recentProjects = [] }) {
                                 <form onSubmit={handleSubmit}>
 
                                     {/* Drop zone */}
+                                    <Tooltip text="Drop your gameplay here (MP4, MKV, up to 60 mins)" position="top">
                                     <div
                                         className={[
                                             'relative rounded-xl border-2 border-dashed p-10 text-center',
@@ -271,6 +275,7 @@ export default function Upload({ recentVideos = [], recentProjects = [] }) {
                                             </div>
                                         )}
                                     </div>
+                                    </Tooltip>
 
                                     {/* Error */}
                                     {error && (
@@ -306,6 +311,7 @@ export default function Upload({ recentVideos = [], recentProjects = [] }) {
                                     )}
 
                                     {/* Submit */}
+                                    <Tooltip text="Export your final montage" position="top">
                                     <button
                                         type="submit"
                                         disabled={!file || uploading}
@@ -325,6 +331,7 @@ export default function Upload({ recentVideos = [], recentProjects = [] }) {
                                             'Generate Highlights'
                                         )}
                                     </button>
+                                    </Tooltip>
 
                                 </form>
                             </div>

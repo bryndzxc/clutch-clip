@@ -17,7 +17,11 @@ export default function Landing() {
 
     return (
         <>
-            <Head title="ClutchClip | AI Montage Generator" />
+            <Head>
+                <title>ClutchClip - AI Gaming Highlight Generator</title>
+                <meta name="description" content="Automatically generate gaming highlights using AI. Upload your gameplay and get clips instantly for TikTok, YouTube, and Facebook." />
+                <meta name="keywords" content="gaming highlights, AI video editor, montage maker, valorant clips, clutch clips, gaming montage" />
+            </Head>
             <div className="min-h-screen bg-gray-950 text-white">
                 <Navbar onOpenAuthModal={setAuthModalMode} />
                 <main>
