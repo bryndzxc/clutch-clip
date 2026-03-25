@@ -111,6 +111,11 @@ class ProcessVideoJob implements ShouldQueue
             return;
         }
 
+        // Purge any clip records from a previous (failed/retried) run before saving new ones.
+        // Without this, a retried job accumulates stale DB records that point to files
+        // which no longer exist, causing 404s in the UI.
+        Clip::where('video_id', $video->id)->delete();
+
         // Create clip records
         $clipsBaseDir = config('clutchclip.clips_dir');
         $thumbsBaseDir = config('clutchclip.thumbnails_dir');

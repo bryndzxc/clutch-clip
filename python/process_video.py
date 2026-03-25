@@ -442,26 +442,34 @@ def main():
         print(f"[peaks] Found {len(moments)} highlight moments.", file=sys.stderr)
 
         # ── Cut clips ─────────────────────────────────────────────────────────
+        # clip_out_index counts only successfully saved clips so output filenames
+        # are always sequential (clip_1.mp4, clip_2.mp4, …) regardless of FFmpeg
+        # failures on earlier moments.
         clips = []
+        clip_out_index = 0
         for i, event in enumerate(moments, start=1):
             start = event["start"]
             end   = event["end"]
 
             print(f"[clip {i}] Cutting {start}s → {end}s (score={event['score']})", file=sys.stderr)
 
+            clip_out_index += 1
             filename = cut_clip(
-                video_path, output_dir, i, start, end,
+                video_path, output_dir, clip_out_index, start, end,
                 output_height=output_height,
                 crf=crf,
                 preset=preset,
                 vf_filter=vf_filter,
             )
+            if not filename:
+                clip_out_index -= 1  # reclaim index so next success is sequential
+                continue
             if filename:
                 # Generate thumbnail at the midpoint of the clip
                 thumbnail = None
                 if thumbnails_dir:
                     mid_sec = start + (end - start) // 2
-                    thumbnail = generate_thumbnail(video_path, thumbnails_dir, i, mid_sec)
+                    thumbnail = generate_thumbnail(video_path, thumbnails_dir, clip_out_index, mid_sec)
 
                 clips.append({
                     "start":     start,
