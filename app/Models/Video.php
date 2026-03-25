@@ -56,13 +56,46 @@ class Video extends Model
         return storage_path('app/' . $this->temp_path);
     }
 
+    // ─── Canonical pipeline statuses ──────────────────────────────────────────
+
+    /** Terminal success: new pipeline writes 'completed'; legacy records may have 'done'. */
+    public function isCompleted(): bool
+    {
+        return in_array($this->status, ['completed', 'done'], true);
+    }
+
+    /** Terminal failure. */
+    public function isFailed(): bool
+    {
+        return $this->status === 'failed';
+    }
+
+    /** Any terminal state (success or failure) — polling should stop. */
+    public function isTerminal(): bool
+    {
+        return $this->isCompleted() || $this->isFailed();
+    }
+
+    /** Any in-flight processing state (not queued, not terminal). */
+    public function isProcessing(): bool
+    {
+        return in_array($this->status, [
+            'probing',
+            'preparing_analysis_assets',
+            'detecting_highlights',
+            'cutting_clips',
+            'generating_thumbnails',
+            'processing', // legacy
+        ], true);
+    }
+
     /**
      * Whether this video has reached a successful terminal state.
-     * Handles both the legacy 'done' status and the new 'completed' status.
+     * @deprecated Use isCompleted() instead.
      */
     public function isProcessed(): bool
     {
-        return in_array($this->status, ['done', 'completed']);
+        return $this->isCompleted();
     }
 
     /**

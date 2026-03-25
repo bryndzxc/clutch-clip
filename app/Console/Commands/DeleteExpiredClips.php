@@ -13,11 +13,11 @@ class DeleteExpiredClips extends Command
 
     public function handle(): int
     {
-        $deleted  = 0;
-        $skipped  = 0;
+        $deleted = 0;
+        $skipped = 0;
 
-        // Find all completed videos that still have clip records
-        Video::where('status', 'done')
+        // Find all completed videos (both 'completed' and legacy 'done') that still have clip records.
+        Video::whereIn('status', ['completed', 'done'])
             ->whereNotNull('processed_at')
             ->whereHas('clips')
             ->with(['user', 'clips'])
@@ -25,17 +25,19 @@ class DeleteExpiredClips extends Command
                 foreach ($videos as $video) {
                     $user = $video->user;
 
-                    // If the video belongs to a deleted user, skip (will be cleaned by orphan sweep)
-                    if (! $user) {
+                    // If the video's user was deleted, skip — the orphan-clip sweep
+                    // in clutchclip:cleanup will remove these files.
+                    if (!$user) {
                         $skipped++;
                         continue;
                     }
 
-                    $settings     = $user->getSettings();
-                    $retainHours  = (int) ($settings['auto_delete_hours'] ?? 168);
-                    $expiresAt    = $video->processed_at->addHours($retainHours);
+                    $settings    = $user->getSettings();
+                    $retainHours = (int) ($settings['auto_delete_hours']
+                        ?? config('clutchclip.cleanup.clips_retention_hours', 168));
+                    $expiresAt   = $video->processed_at->addHours($retainHours);
 
-                    if (! $expiresAt->isPast()) {
+                    if (!$expiresAt->isPast()) {
                         continue; // not expired yet
                     }
 
@@ -53,13 +55,19 @@ class DeleteExpiredClips extends Command
     private function deleteClipsForVideo(Video $video): void
     {
         foreach ($video->clips as $clip) {
-            // Delete clip file
+            // Primary clip file
             $clipPath = $clip->getAbsolutePath();
             if (file_exists($clipPath)) {
                 @unlink($clipPath);
             }
 
-            // Delete thumbnail file
+            // Refined export (may exist alongside the original clip)
+            $refinedPath = $clip->getRefinedAbsolutePath();
+            if ($refinedPath && file_exists($refinedPath)) {
+                @unlink($refinedPath);
+            }
+
+            // Thumbnail
             if ($clip->thumbnail_path) {
                 $thumbPath = storage_path('app/' . $clip->thumbnail_path);
                 if (file_exists($thumbPath)) {
@@ -68,13 +76,37 @@ class DeleteExpiredClips extends Command
             }
         }
 
-        // Try to remove the now-empty clips and thumbnails directories
-        @rmdir($video->getClipsDir());
-        @rmdir($video->getThumbnailsDir());
+        // Remove the per-video clip directory tree (catches refined/ and any other residue).
+        $this->deleteDirectory($video->getClipsDir());
 
-        // Delete all clip DB records for this video (files are already gone)
+        // Remove the per-video thumbnails directory.
+        $this->deleteDirectory($video->getThumbnailsDir());
+
+        // Remove all clip DB records for this video.
         $video->clips()->delete();
 
         Log::info("[DeleteExpiredClips] Clips removed for Video #{$video->id} ({$video->original_name})");
+    }
+
+    /**
+     * Recursively delete a directory and all its contents.
+     * Safe to call on non-existent paths.
+     */
+    private function deleteDirectory(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+
+        foreach (scandir($dir) as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $dir . DIRECTORY_SEPARATOR . $item;
+            is_dir($path) ? $this->deleteDirectory($path) : @unlink($path);
+        }
+
+        @rmdir($dir);
     }
 }

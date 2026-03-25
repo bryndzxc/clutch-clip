@@ -32,7 +32,7 @@ class AiMontageController extends Controller
     public function generate(Request $request, Video $video): JsonResponse
     {
         abort_if(auth()->id() !== $video->user_id, 403);
-        abort_if($video->status !== 'done', 422, 'Video is not yet processed.');
+        abort_if(!$video->isCompleted(), 422, 'Video is not yet processed.');
 
         $data = $request->validate([
             'mode' => ['nullable', 'string', 'in:auto,flashy,cinematic,clean'],

@@ -32,6 +32,7 @@ return [
 
     'temp_upload_dir' => 'temp/uploads',
     'chunks_dir'      => 'temp/chunks',
+    'analysis_dir'    => 'temp/analysis',
     'clips_dir'       => 'public/clips',
     'thumbnails_dir'  => 'public/thumbnails',
 
@@ -45,14 +46,18 @@ return [
     */
 
     'cleanup' => [
-        // Delete temp uploads from failed jobs older than this many hours
+        // Delete temp uploads and analysis assets from failed jobs older than this many hours
         'failed_retention_hours' => (int) env('CLUTCHCLIP_FAILED_RETENTION_HOURS', 24),
 
         // Delete abandoned temp files (no matching DB record) older than this many hours
         'abandoned_retention_hours' => (int) env('CLUTCHCLIP_ABANDONED_RETENTION_HOURS', 12),
 
-        // Delete final generated clips (and their DB records) this many hours after processing
-        'clips_retention_hours' => (int) env('CLUTCHCLIP_CLIPS_RETENTION_HOURS', 48),
+        // Mark videos stuck in a pipeline stage for longer than this as failed and clean their assets
+        'stuck_processing_hours' => (int) env('CLUTCHCLIP_STUCK_PROCESSING_HOURS', 4),
+
+        // Per-user clip retention fallback used by delete-expired-clips when the user has no setting
+        // (individual users can override this via their account settings)
+        'clips_retention_hours' => (int) env('CLUTCHCLIP_CLIPS_RETENTION_HOURS', 168),
     ],
 
 ];

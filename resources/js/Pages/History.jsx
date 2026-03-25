@@ -17,16 +17,34 @@ function fmtDuration(seconds) {
     return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+// ─── Status helpers ────────────────────────────────────────────────────────────
+
+const DONE_STATUSES     = new Set(['completed', 'done']);
+const ACTIVE_STATUSES   = new Set([
+    'queued', 'pending',
+    'probing', 'preparing_analysis_assets', 'detecting_highlights',
+    'cutting_clips', 'generating_thumbnails',
+    'processing', // legacy
+]);
+
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
 function StatusBadge({ status }) {
+    const processingEntry = { cls: 'bg-violet-500/15 text-violet-300 border-violet-500/20', label: 'Processing', dot: 'bg-violet-400 animate-pulse' };
     const map = {
-        pending:    { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20', label: 'Queued',     dot: 'bg-yellow-400' },
-        processing: { cls: 'bg-violet-500/15 text-violet-300 border-violet-500/20', label: 'Processing', dot: 'bg-violet-400 animate-pulse' },
-        done:       { cls: 'bg-green-500/15  text-green-300  border-green-500/20',  label: 'Complete',   dot: 'bg-green-400' },
-        failed:     { cls: 'bg-red-500/15    text-red-300    border-red-500/20',    label: 'Failed',     dot: 'bg-red-400' },
+        queued:                    { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20', label: 'Queued',     dot: 'bg-yellow-400' },
+        pending:                   { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20', label: 'Queued',     dot: 'bg-yellow-400' },
+        probing:                   processingEntry,
+        preparing_analysis_assets: processingEntry,
+        detecting_highlights:      processingEntry,
+        cutting_clips:             processingEntry,
+        generating_thumbnails:     processingEntry,
+        processing:                processingEntry,
+        completed:                 { cls: 'bg-green-500/15  text-green-300  border-green-500/20',  label: 'Complete',   dot: 'bg-green-400' },
+        done:                      { cls: 'bg-green-500/15  text-green-300  border-green-500/20',  label: 'Complete',   dot: 'bg-green-400' },
+        failed:                    { cls: 'bg-red-500/15    text-red-300    border-red-500/20',    label: 'Failed',     dot: 'bg-red-400' },
     };
-    const c = map[status] ?? map.pending;
+    const c = map[status] ?? map.queued;
     return (
         <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${c.cls}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${c.dot}`} />
@@ -44,11 +62,11 @@ function VideoRow({ video }) {
         router.delete(`/videos/${video.id}`);
     }
 
-    const isProcessing = video.status === 'pending' || video.status === 'processing';
-    const isDone       = video.status === 'done';
+    const isProcessing = ACTIVE_STATUSES.has(video.status);
+    const isDone       = DONE_STATUSES.has(video.status);
     const isFailed     = video.status === 'failed';
 
-    const isClickable = video.status === 'done' || video.status === 'pending' || video.status === 'processing';
+    const isClickable = isDone || isProcessing;
     const Wrapper = isClickable ? 'a' : 'div';
     const wrapperProps = isClickable ? { href: `/videos/${video.id}` } : {};
 
@@ -170,8 +188,8 @@ function EmptyState() {
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function History({ videos = [], recentProjects = [] }) {
-    const doneCount       = videos.filter(v => v.status === 'done').length;
-    const processingCount = videos.filter(v => v.status === 'pending' || v.status === 'processing').length;
+    const doneCount       = videos.filter(v => DONE_STATUSES.has(v.status)).length;
+    const processingCount = videos.filter(v => ACTIVE_STATUSES.has(v.status)).length;
     const totalClips      = videos.reduce((sum, v) => sum + (v.clips_count ?? 0), 0);
 
     return (
@@ -233,7 +251,7 @@ export default function History({ videos = [], recentProjects = [] }) {
                             <span className="h-2 w-2 rounded-full bg-violet-400 animate-pulse shrink-0" />
                             <p className="text-sm text-violet-300">
                                 {processingCount} job{processingCount !== 1 ? 's are' : ' is'} currently processing.
-                                {' '}<a href={`/videos/${videos.find(v => v.status === 'pending' || v.status === 'processing')?.id}`}
+                                {' '}<a href={`/videos/${videos.find(v => ACTIVE_STATUSES.has(v.status))?.id}`}
                                     className="underline underline-offset-2 hover:text-violet-200 transition-colors">
                                     View progress →
                                 </a>

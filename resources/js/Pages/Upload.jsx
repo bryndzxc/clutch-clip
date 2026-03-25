@@ -5,15 +5,33 @@ import ResumeProjectsPanel from '../Components/Projects/ResumeProjectsPanel';
 import OnboardingModal from '../Components/OnboardingModal';
 import Tooltip from '../Components/Tooltip';
 
+// ─── Status helpers ────────────────────────────────────────────────────────────
+
+const DONE_STATUSES   = new Set(['completed', 'done']);
+const ACTIVE_STATUSES = new Set([
+    'queued', 'pending',
+    'probing', 'preparing_analysis_assets', 'detecting_highlights',
+    'cutting_clips', 'generating_thumbnails',
+    'processing', // legacy
+]);
+
 // ─── Status badge ─────────────────────────────────────────────────────────────
 function StatusBadge({ status }) {
+    const processingEntry = { cls: 'bg-violet-500/15 text-violet-300 border-violet-500/20', label: 'Processing' };
     const config = {
-        pending:    { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20',  label: 'Pending' },
-        processing: { cls: 'bg-violet-500/15 text-violet-300 border-violet-500/20',  label: 'Processing' },
-        done:       { cls: 'bg-green-500/15  text-green-300  border-green-500/20',   label: 'Done' },
-        failed:     { cls: 'bg-red-500/15    text-red-300    border-red-500/20',     label: 'Failed' },
+        queued:                    { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20', label: 'Queued' },
+        pending:                   { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20', label: 'Queued' },
+        probing:                   processingEntry,
+        preparing_analysis_assets: processingEntry,
+        detecting_highlights:      processingEntry,
+        cutting_clips:             processingEntry,
+        generating_thumbnails:     processingEntry,
+        processing:                processingEntry,
+        completed:                 { cls: 'bg-green-500/15  text-green-300  border-green-500/20',  label: 'Done' },
+        done:                      { cls: 'bg-green-500/15  text-green-300  border-green-500/20',  label: 'Done' },
+        failed:                    { cls: 'bg-red-500/15    text-red-300    border-red-500/20',    label: 'Failed' },
     };
-    const c = config[status] ?? config.pending;
+    const c = config[status] ?? config.queued;
     return (
         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${c.cls}`}>
             {c.label}
@@ -23,7 +41,7 @@ function StatusBadge({ status }) {
 
 // ─── Recent job row ───────────────────────────────────────────────────────────
 function JobRow({ video }) {
-    const isClickable = video.status === 'done' || video.status === 'pending' || video.status === 'processing';
+    const isClickable = DONE_STATUSES.has(video.status) || ACTIVE_STATUSES.has(video.status);
 
     return (
         <a
@@ -46,12 +64,12 @@ function JobRow({ video }) {
             </div>
             <div className="flex items-center gap-3 shrink-0 ml-4">
                 <StatusBadge status={video.status} />
-                {video.status === 'done' && (
+                {DONE_STATUSES.has(video.status) && (
                     <span className="text-xs font-medium text-violet-400 group-hover:text-violet-300 transition-colors whitespace-nowrap">
                         View clips →
                     </span>
                 )}
-                {(video.status === 'pending' || video.status === 'processing') && (
+                {ACTIVE_STATUSES.has(video.status) && (
                     <span className="text-xs text-gray-600 group-hover:text-gray-400 transition-colors whitespace-nowrap">
                         View →
                     </span>

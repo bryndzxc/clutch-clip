@@ -37,7 +37,7 @@ class MontageProjectController extends Controller
     public function create(Video $video): InertiaResponse
     {
         abort_if(auth()->id() !== $video->user_id, 403);
-        abort_if($video->status !== 'done', 422, 'Video is not yet processed.');
+        abort_if(!$video->isCompleted(), 422, 'Video is not yet processed.');
 
         return Inertia::render('MontageEditor', [
             'video'   => $this->videoPayload($video),
