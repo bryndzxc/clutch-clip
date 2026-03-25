@@ -337,7 +337,7 @@ class RenderMontageJob implements ShouldQueue
         if ((!$musicAbsPath || !file_exists($musicAbsPath)) && !empty($music['track_id'])) {
             $trackId = $music['track_id'];
             if (in_array($trackId, self::BUILTIN_TRACK_IDS, true)) {
-                $builtinPath  = storage_path('app/music/builtin/' . $trackId . '.mp3');
+                $builtinPath  = public_path('music/builtin/' . $trackId . '.mp3');
                 $musicAbsPath = file_exists($builtinPath) ? $builtinPath : null;
                 if ($musicAbsPath === null) {
                     Log::warning("[RenderMontageJob] Built-in track '{$trackId}' not found at expected path, skipping music.");
@@ -788,7 +788,7 @@ class RenderMontageJob implements ShouldQueue
 
         // Overlay asset compositing (screen blend — black pixels are transparent)
         $overlayFile = $tmpl['overlayFile'] ?? null;
-        $overlayPath = $overlayFile ? storage_path("app/overlays/{$overlayFile}") : null;
+        $overlayPath = $overlayFile ? public_path("overlays/{$overlayFile}") : null;
         $hasOverlay  = $overlayPath && file_exists($overlayPath);
 
         if ($hasOverlay) {

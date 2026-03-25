@@ -69,7 +69,7 @@ Route::middleware('auth')->group(function () {
         if (!in_array($trackId, $allowed, true)) {
             abort(404);
         }
-        $path = storage_path('app/music/builtin/' . $trackId . '.mp3');
+        $path = public_path('music/builtin/' . $trackId . '.mp3');
         if (!file_exists($path)) {
             abort(404, 'Track not available yet.');
         }

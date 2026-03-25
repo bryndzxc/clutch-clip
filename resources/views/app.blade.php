@@ -16,7 +16,7 @@
     <meta property="og:type" content="website">
     <meta property="og:title" content="ClutchClip - AI Gaming Highlight Generator">
     <meta property="og:description" content="Automatically generate gaming highlights using AI. Upload your gameplay and get clips instantly for TikTok, YouTube, and Facebook.">
-    <meta property="og:image" content="{{ config('app.url') }}/storage/main_logo.png">
+    <meta property="og:image" content="{{ config('app.url') }}/main_logo.png">
     <meta property="og:url" content="{{ config('app.url') }}">
     <meta property="og:site_name" content="ClutchClip">
 
@@ -24,12 +24,12 @@
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="ClutchClip - AI Gaming Highlight Generator">
     <meta name="twitter:description" content="Automatically generate gaming highlights using AI. Upload your gameplay and get clips instantly.">
-    <meta name="twitter:image" content="{{ config('app.url') }}/storage/main_logo.png">
+    <meta name="twitter:image" content="{{ config('app.url') }}/main_logo.png">
 
     <!-- Favicon -->
-    <link rel="icon" type="image/png" href="/storage/icon.png">
-    <link rel="shortcut icon" href="/storage/icon.png">
-    <link rel="apple-touch-icon" href="/storage/icon.png">
+    <link rel="icon" type="image/png" href="/icon.png">
+    <link rel="shortcut icon" href="/icon.png">
+    <link rel="apple-touch-icon" href="/icon.png">
 
     @viteReactRefresh
     @vite(['resources/css/app.css', 'resources/js/app.jsx'])

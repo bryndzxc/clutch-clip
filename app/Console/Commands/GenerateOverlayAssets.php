@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Process;
 /**
  * Generates synthetic overlay video assets used by intro/outro templates.
  *
- * Assets are stored in storage/app/overlays/ and composited via FFmpeg's
+ * Assets are stored in public/overlays/ and composited via FFmpeg's
  * screen-blend mode at render time. All overlays are dark backgrounds with
  * brightly-coloured animated elements so they add light rather than obscure
  * the template background.
@@ -71,7 +71,7 @@ class GenerateOverlayAssets extends Command
 
     public function handle(): int
     {
-        $dir = storage_path('app/overlays');
+        $dir = public_path('overlays');
         if (!is_dir($dir)) {
             mkdir($dir, 0755, true);
             $this->info("Created directory: {$dir}");

@@ -80,9 +80,9 @@ export default function DashboardHeader({ active = 'upload' }) {
                 <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
                     <a href="/upload" className="shrink-0 flex items-center">
                         <picture>
-                            <source srcSet="/storage/light_version_logo.png" media="(prefers-color-scheme: light)" />
+                            <source srcSet="/light_version_logo.png" media="(prefers-color-scheme: light)" />
                             <img
-                                src="/storage/main_logo.png"
+                                src="/main_logo.png"
                                 alt="ClutchClip"
                                 className="h-7 w-auto object-contain"
                             />
