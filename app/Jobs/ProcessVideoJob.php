@@ -16,7 +16,7 @@ class ProcessVideoJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $timeout = 600; // 10 minutes max
+    public int $timeout = 1860; // 31 minutes — covers 1800s process + overhead
 
     public function __construct(public int $videoId)
     {
@@ -77,7 +77,7 @@ class ProcessVideoJob implements ShouldQueue
             escapeshellarg($settings['aspect_ratio']),
         );
 
-        $processTimeout = 580;
+        $processTimeout = 1800;
         Log::info("[ProcessVideoJob] DIAG python_bin={$pythonBin} job_timeout={$this->timeout} process_timeout={$processTimeout} queue=" . config('queue.default'));
         Log::info("[ProcessVideoJob] Running: {$command}");
 
