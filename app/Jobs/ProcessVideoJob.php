@@ -56,7 +56,7 @@ class ProcessVideoJob implements ShouldQueue
             ?? \App\Models\User::DEFAULT_SETTINGS;
 
         // Run the Python highlight detection script
-        $pythonBin = env('PYTHON_BIN', 'python3');
+        $pythonBin = config('services.python.bin', 'python3');
         $pythonScript = base_path('python/process_video.py');
         $command = sprintf(
             '%s %s --input %s --output-dir %s --thumbnails-dir %s'

@@ -41,4 +41,8 @@ return [
         'redirect'      => env('GOOGLE_REDIRECT_URI', '/auth/google/callback'),
     ],
 
+    'python' => [
+        'bin' => env('PYTHON_BIN', 'python3'),
+    ],
+
 ];
