@@ -12,6 +12,14 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 
+/**
+ * @deprecated Superseded by the ProbeVideoJob → PrepareAnalysisAssetsJob →
+ *             DetectHighlightsJob → CutClipsJob → GenerateThumbnailsJob chain.
+ *
+ * This class is kept so that any jobs already sitting in the queue at deploy
+ * time still complete successfully. New uploads dispatched after the deploy
+ * will go through ProbeVideoJob instead.
+ */
 class ProcessVideoJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
@@ -25,6 +33,14 @@ class ProcessVideoJob implements ShouldQueue
     public function handle(): void
     {
         $video = Video::findOrFail($this->videoId);
+
+        // If the video was already picked up by the new pipeline (status changed
+        // by ProbeVideoJob), do nothing and let the new chain continue.
+        if (!in_array($video->status, ['pending', 'processing', 'queued'])) {
+            Log::info("[ProcessVideoJob] Video #{$video->id}: skipping — status is '{$video->status}' (new pipeline already running).");
+            return;
+        }
+
         $video->update(['status' => 'processing']);
 
         $videoPath     = $video->getTempVideoPath();

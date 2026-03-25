@@ -2,15 +2,13 @@
 
 namespace App\Http\Controllers;
 
-use App\Jobs\ProcessVideoJob;
+use App\Jobs\ProbeVideoJob;
 use App\Models\Clip;
 use App\Models\MontageProject;
 use App\Models\Video;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response as InertiaResponse;
@@ -69,34 +67,20 @@ class VideoController extends Controller
         $uploaded->move($tempDir, $filename);
 
         $tempPath = config('clutchclip.temp_upload_dir') . '/' . $filename;
-        $absPath  = storage_path('app/' . $tempPath);
 
-        // ── Step 3: Inspect actual video duration before creating any record ──
-        $duration       = $this->probeVideoDuration($absPath);
-        $maxDurationSec = $maxDurationMin * 60;
-
-        if ($duration !== null && $duration > $maxDurationSec) {
-            @unlink($absPath);
-            Log::info("[VideoController] Rejected upload — duration {$duration}s exceeds {$maxDurationSec}s limit. File deleted.");
-
-            return response()->json([
-                'message' => "Video exceeds the maximum allowed duration of {$maxDurationMin} minutes. For best results, upload focused gameplay sessions under {$maxDurationMin} minutes.",
-                'errors'  => ['video' => ["Video exceeds the maximum allowed duration of {$maxDurationMin} minutes."]],
-            ], 422);
-        }
-
-        // ── Step 4: Persist record and queue processing ───────────────────────
+        // ── Step 3: Persist record and queue processing ───────────────────────
+        // Duration validation runs inside ProbeVideoJob — no blocking ffprobe here.
         $video = Video::create([
             'user_id'       => auth()->id(),
             'filename'      => $filename,
             'original_name' => $uploaded->getClientOriginalName(),
             'temp_path'     => $tempPath,
             'size'          => $uploaded->getSize(),
-            'status'        => 'pending',
+            'status'        => 'queued',
             'uploaded_at'   => now(),
         ]);
 
-        ProcessVideoJob::dispatch($video->id);
+        ProbeVideoJob::dispatch($video->id);
 
         return response()->json(['id' => $video->id, 'status' => $video->status], 201);
     }
@@ -185,55 +169,20 @@ class VideoController extends Controller
             ], 422);
         }
 
-        $maxDurationMin = config('clutchclip.upload.max_duration_minutes', 60);
-        $duration       = $this->probeVideoDuration($absPath);
-
-        if ($duration !== null && $duration > $maxDurationMin * 60) {
-            @unlink($absPath);
-            Log::info("[VideoController] Rejected assembled upload — duration {$duration}s. File deleted.");
-            return response()->json([
-                'message' => "Video exceeds the maximum allowed duration of {$maxDurationMin} minutes. For best results, upload focused gameplay sessions under {$maxDurationMin} minutes.",
-                'errors'  => ['video' => ["Video exceeds the maximum allowed duration of {$maxDurationMin} minutes."]],
-            ], 422);
-        }
-
+        // Duration validation runs inside ProbeVideoJob — no blocking ffprobe here.
         $video = Video::create([
             'user_id'       => auth()->id(),
             'filename'      => $filename,
             'original_name' => $originalName,
             'temp_path'     => $tempPath,
             'size'          => $fileSize,
-            'status'        => 'pending',
+            'status'        => 'queued',
             'uploaded_at'   => now(),
         ]);
 
-        ProcessVideoJob::dispatch($video->id);
+        ProbeVideoJob::dispatch($video->id);
 
         return response()->json(['id' => $video->id, 'status' => $video->status], 201);
-    }
-
-    /**
-     * Run ffprobe on the given file and return its duration in seconds.
-     * Returns null if ffprobe is unavailable or the probe fails — callers
-     * treat null as "unknown duration, allow through".
-     */
-    private function probeVideoDuration(string $absPath): ?float
-    {
-        $result = Process::run([
-            'ffprobe', '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            $absPath,
-        ]);
-
-        if (!$result->successful()) {
-            Log::warning("[VideoController] ffprobe failed for {$absPath}: " . $result->errorOutput());
-            return null;
-        }
-
-        $output = trim($result->output());
-
-        return is_numeric($output) ? (float) $output : null;
     }
 
     public function history(): InertiaResponse
@@ -293,17 +242,33 @@ class VideoController extends Controller
         return response()->json([
             'id'            => $video->id,
             'status'        => $video->status,
+            'stage_label'   => $this->stageLabel($video->status),
             'duration'      => $video->duration,
             'error_message' => $video->error_message,
             'processed_at'  => $video->processed_at?->toIso8601String(),
         ]);
     }
 
+    private function stageLabel(string $status): string
+    {
+        return match ($status) {
+            'queued'                    => 'Queued for processing...',
+            'probing'                   => 'Reading video metadata...',
+            'preparing_analysis_assets' => 'Preparing analysis...',
+            'detecting_highlights'      => 'Detecting highlights...',
+            'cutting_clips'             => 'Cutting clips...',
+            'generating_thumbnails'     => 'Generating thumbnails...',
+            'completed', 'done'         => 'Complete',
+            'failed'                    => 'Failed',
+            default                     => 'Processing...',
+        };
+    }
+
     public function clips(Video $video): JsonResponse
     {
         abort_if(auth()->id() !== $video->user_id, 403);
 
-        if ($video->status !== 'done') {
+        if (!$video->isProcessed()) {
             return response()->json(['message' => 'Processing not complete'], 422);
         }
 
@@ -372,7 +337,7 @@ class VideoController extends Controller
 
         // Pre-load clips when already done — avoids a second round-trip
         $initialClips = [];
-        if ($video->status === 'done') {
+        if ($video->isProcessed()) {
             $initialClips = $video->clips->map(fn(Clip $clip) => [
                 'id'            => $clip->id,
                 'start_time'    => $clip->start_time,

@@ -27,14 +27,30 @@ function fmtDuration(seconds) {
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
+// Statuses that represent "still processing" in the new pipeline
+const PROCESSING_STATUSES = new Set([
+    'queued', 'pending', 'probing', 'preparing_analysis_assets',
+    'detecting_highlights', 'cutting_clips', 'generating_thumbnails',
+    'processing', // legacy
+]);
+const DONE_STATUSES = new Set(['done', 'completed']);
+
 function StatusBadge({ status }) {
+    const processingEntry = { cls: 'bg-violet-500/15 text-violet-300 border-violet-500/20', label: 'Processing' };
     const map = {
-        pending:    { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20', label: 'Queued' },
-        processing: { cls: 'bg-violet-500/15 text-violet-300 border-violet-500/20', label: 'Processing' },
-        done:       { cls: 'bg-green-500/15  text-green-300  border-green-500/20',  label: 'Complete' },
-        failed:     { cls: 'bg-red-500/15    text-red-300    border-red-500/20',    label: 'Failed' },
+        queued:                    { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20', label: 'Queued' },
+        pending:                   { cls: 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20', label: 'Queued' },
+        probing:                   processingEntry,
+        preparing_analysis_assets: processingEntry,
+        detecting_highlights:      processingEntry,
+        cutting_clips:             processingEntry,
+        generating_thumbnails:     processingEntry,
+        processing:                processingEntry,
+        done:                      { cls: 'bg-green-500/15  text-green-300  border-green-500/20',  label: 'Complete' },
+        completed:                 { cls: 'bg-green-500/15  text-green-300  border-green-500/20',  label: 'Complete' },
+        failed:                    { cls: 'bg-red-500/15    text-red-300    border-red-500/20',    label: 'Failed' },
     };
-    const c = map[status] ?? map.pending;
+    const c = map[status] ?? map.queued;
     return (
         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${c.cls}`}>
             {status === 'processing' && (
@@ -48,10 +64,10 @@ function StatusBadge({ status }) {
 // ─── Processing state ─────────────────────────────────────────────────────────
 
 const PROCESSING_STEPS = [
-    { key: 'received',   label: 'Video received',       statuses: ['pending', 'processing', 'done'] },
-    { key: 'queued',     label: 'Queued for processing', statuses: ['pending', 'processing', 'done'] },
-    { key: 'analyzing',  label: 'Extracting highlights', statuses: ['processing', 'done'] },
-    { key: 'generating', label: 'Generating clips',      statuses: ['done'] },
+    { key: 'received',   label: 'Video received',       active: () => true },
+    { key: 'analyzing',  label: 'Analysing highlights',  active: (s) => ['probing','preparing_analysis_assets','detecting_highlights','processing',...Array.from(DONE_STATUSES)].includes(s) },
+    { key: 'cutting',    label: 'Cutting clips',         active: (s) => ['cutting_clips','generating_thumbnails',...Array.from(DONE_STATUSES)].includes(s) },
+    { key: 'generating', label: 'Generating thumbnails', active: (s) => ['generating_thumbnails',...Array.from(DONE_STATUSES)].includes(s) },
 ];
 
 const STEP_DELAYS = ['animate-fade-up', 'animate-fade-up-1', 'animate-fade-up-2', 'animate-fade-up-3'];
@@ -59,9 +75,13 @@ const STEP_DELAYS = ['animate-fade-up', 'animate-fade-up-1', 'animate-fade-up-2'
 // Horizontal step track: Upload → Detect → Generate → Ready
 const TRACK_STEPS = ['Upload', 'Detect', 'Generate', 'Ready'];
 
-function ProcessingView({ status, video }) {
-    const activeIndex     = status === 'processing' ? 2 : 1;
-    const trackActiveIdx  = status === 'processing' ? 2 : 1;
+function ProcessingView({ status, stageLabel, video }) {
+    // Map pipeline stage to which track step is active (0-based)
+    const trackActiveIdx = (() => {
+        if (['cutting_clips', 'generating_thumbnails'].includes(status)) return 2;
+        if (['probing', 'preparing_analysis_assets', 'detecting_highlights', 'processing'].includes(status)) return 1;
+        return 0;
+    })();
 
     return (
         <div className="mx-auto max-w-md animate-fade-up">
@@ -86,7 +106,7 @@ function ProcessingView({ status, video }) {
                 </div>
 
                 <h2 className="text-base font-semibold text-white">
-                    {status === 'processing' ? 'Extracting highlights…' : 'Queued for processing…'}
+                    {stageLabel ?? (PROCESSING_STATUSES.has(status) ? 'Processing…' : 'Queued for processing…')}
                 </h2>
                 <p className="mt-1.5 text-sm text-gray-500">
                     This may take a few minutes. The page updates automatically.
@@ -122,8 +142,9 @@ function ProcessingView({ status, video }) {
                 {/* Detailed step indicators */}
                 <div className="mt-6 text-left space-y-3">
                     {PROCESSING_STEPS.map((step, i) => {
-                        const isDone    = step.statuses.includes(status) && i < activeIndex;
-                        const isActive  = i === activeIndex && step.statuses.includes(status);
+                        const stepOn   = step.active(status);
+                        const isDone   = stepOn && i < trackActiveIdx;
+                        const isActive = stepOn && i === trackActiveIdx;
 
                         return (
                             <div key={step.key} className={`flex items-center gap-3 ${STEP_DELAYS[i]}`}>
@@ -525,6 +546,7 @@ function AiMontagePanel({ videoId }) {
 
 export default function Results({ video, initialClips = [], relatedProjects = [] }) {
     const [status, setStatus]         = useState(video.status);
+    const [stageLabel, setStageLabel] = useState(null);
     const [errorMsg, setErrorMsg]     = useState(video.error_message ?? null);
     const [clips, setClips]           = useState(initialClips);
     const [editingClip, setEditingClip] = useState(null);
@@ -545,7 +567,8 @@ export default function Results({ video, initialClips = [], relatedProjects = []
         ));
     }
 
-    const isTerminal = status === 'done' || status === 'failed';
+    const isDone     = DONE_STATUSES.has(status);
+    const isTerminal = isDone || status === 'failed';
 
     // Poll while not terminal
     useEffect(() => {
@@ -556,12 +579,13 @@ export default function Results({ video, initialClips = [], relatedProjects = []
                 const res  = await fetch(`/api/videos/${video.id}/status`);
                 const data = await res.json();
                 setStatus(data.status);
+                if (data.stage_label) setStageLabel(data.stage_label);
 
                 if (data.status === 'failed') {
                     setErrorMsg(data.error_message ?? 'An unknown error occurred.');
                     clearInterval(interval);
                 }
-                if (data.status === 'done') {
+                if (DONE_STATUSES.has(data.status)) {
                     clearInterval(interval);
                 }
             } catch {
@@ -574,16 +598,16 @@ export default function Results({ video, initialClips = [], relatedProjects = []
 
     // Fetch clips when polling transitions us to done (not on initial load)
     useEffect(() => {
-        if (status !== 'done') return;
+        if (!isDone) return;
         if (clips.length > 0) return; // already pre-loaded from server props
 
         fetch(`/api/videos/${video.id}/clips`)
             .then(r => r.json())
             .then(d => setClips(d.clips ?? []))
             .catch(() => {});
-    }, [status, video.id, clips.length]);
+    }, [isDone, video.id, clips.length]);
 
-    const pageTitle = status === 'done'
+    const pageTitle = isDone
         ? `Highlights — ${video.original_name}`
         : status === 'failed'
             ? 'Processing Failed'
@@ -636,8 +660,8 @@ export default function Results({ video, initialClips = [], relatedProjects = []
                     {/* ── States ───────────────────────────────────────── */}
 
                     {/* Processing */}
-                    {(status === 'pending' || status === 'processing') && (
-                        <ProcessingView status={status} video={video} />
+                    {PROCESSING_STATUSES.has(status) && (
+                        <ProcessingView status={status} stageLabel={stageLabel} video={video} />
                     )}
 
                     {/* Failed */}
@@ -646,12 +670,12 @@ export default function Results({ video, initialClips = [], relatedProjects = []
                     )}
 
                     {/* Done — no clips */}
-                    {status === 'done' && clips.length === 0 && (
+                    {isDone && clips.length === 0 && (
                         <NoClipsView />
                     )}
 
                     {/* Done — with clips */}
-                    {status === 'done' && clips.length > 0 && (
+                    {isDone && clips.length > 0 && (
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-up">
 
                             {/* Clips column */}

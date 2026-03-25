@@ -13,6 +13,9 @@ class Video extends Model
         'filename',
         'original_name',
         'temp_path',
+        'analysis_video_path',
+        'analysis_audio_path',
+        'detected_highlights',
         'size',
         'status',
         'duration',
@@ -26,11 +29,12 @@ class Video extends Model
     protected function casts(): array
     {
         return [
-            'uploaded_at'     => 'datetime',
-            'processed_at'    => 'datetime',
-            'failed_at'       => 'datetime',
-            'deleted_temp_at' => 'datetime',
-            'duration'        => 'decimal:2',
+            'uploaded_at'        => 'datetime',
+            'processed_at'       => 'datetime',
+            'failed_at'          => 'datetime',
+            'deleted_temp_at'    => 'datetime',
+            'duration'           => 'decimal:2',
+            'detected_highlights' => 'array',
         ];
     }
 
@@ -50,6 +54,60 @@ class Video extends Model
         }
 
         return storage_path('app/' . $this->temp_path);
+    }
+
+    /**
+     * Whether this video has reached a successful terminal state.
+     * Handles both the legacy 'done' status and the new 'completed' status.
+     */
+    public function isProcessed(): bool
+    {
+        return in_array($this->status, ['done', 'completed']);
+    }
+
+    /**
+     * Absolute path to the low-res analysis video, or null if not generated / already cleaned up.
+     */
+    public function getAnalysisVideoPath(): ?string
+    {
+        return $this->analysis_video_path
+            ? storage_path('app/' . $this->analysis_video_path)
+            : null;
+    }
+
+    /**
+     * Absolute path to the mono 16 kHz analysis audio WAV, or null if not generated / cleaned up.
+     */
+    public function getAnalysisAudioPath(): ?string
+    {
+        return $this->analysis_audio_path
+            ? storage_path('app/' . $this->analysis_audio_path)
+            : null;
+    }
+
+    /**
+     * Delete analysis assets from disk and clear their DB columns.
+     * Safe to call even if the files are already gone.
+     */
+    public function deleteAnalysisAssets(): void
+    {
+        foreach (['getAnalysisVideoPath', 'getAnalysisAudioPath'] as $method) {
+            $abs = $this->$method();
+            if ($abs && file_exists($abs)) {
+                @unlink($abs);
+            }
+        }
+
+        // Remove the directory if it is now empty
+        $dir = storage_path("app/temp/analysis/{$this->id}");
+        if (is_dir($dir) && count(glob("{$dir}/*")) === 0) {
+            @rmdir($dir);
+        }
+
+        $this->update([
+            'analysis_video_path' => null,
+            'analysis_audio_path' => null,
+        ]);
     }
 
     /**

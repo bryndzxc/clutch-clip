@@ -1,14 +1,27 @@
 """
 process_video.py — ClutchClip highlight detector
 
-Usage:
+Legacy mode (all-in-one, backwards compatible):
     python process_video.py --input /path/to/video.mp4 --output-dir /path/to/clips/
                             [--clip-count 5] [--pre-roll 3] [--post-roll 3]
                             [--merge-gap 5] [--min-score 50]
                             [--quality high] [--resolution 1080p] [--aspect-ratio original]
 
+Optimized mode (detection only, PHP jobs handle cutting + thumbnails):
+    python process_video.py --analysis-video /path/analysis.mp4
+                            --analysis-audio /path/audio.wav
+                            --source-duration 300.5
+                            --detect-only
+                            [--clip-count 5] [--pre-roll 3] [--post-roll 3]
+                            [--merge-gap 5] [--min-score 50]
+
 Output (stdout, last line):
-    {"clips": [{"start": 120, "end": 135, "filename": "clip_1.mp4", "score": 87}, ...]}
+
+  Legacy mode:
+    {"clips": [{"start": 120, "end": 135, "filename": "clip_1.mp4", "score": 87, "thumbnail": "..."}, ...], "duration": 300.5}
+
+  Detect-only mode:
+    {"highlights": [{"start": 120, "end": 135, "score": 87}, ...]}
 
 Dependencies:
     pip install opencv-python numpy scipy
@@ -34,7 +47,14 @@ from scipy.signal import find_peaks
 
 AUDIO_WEIGHT  = 0.5   # weight for audio-peak score
 MOTION_WEIGHT = 0.5   # weight for frame-difference score
-FRAME_SAMPLE  = 5     # analyze every Nth frame (speed vs accuracy tradeoff)
+
+# Legacy mode: samples every 5th frame from the original full-res video,
+# then resizes each frame to 320×180 for the diff.
+FRAME_SAMPLE_LEGACY = 5
+
+# Optimised mode: the analysis video is already 640px wide, so no per-frame
+# resize is needed. Sampling every 10th frame cuts work by ~8× vs legacy.
+FRAME_SAMPLE_ANALYSIS = 10
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Quality presets → FFmpeg CRF + preset flag
@@ -60,18 +80,19 @@ RESOLUTION_MAP = {
 # Step 1: Extract audio from video using FFmpeg → temp WAV file
 # ──────────────────────────────────────────────────────────────────────────────
 
-def extract_audio(video_path: str, tmp_dir: str) -> str | None:
+def extract_audio(video_path: str, tmp_dir: str, sample_rate: int = 16000) -> str | None:
     """
-    Extracts mono 22050 Hz WAV audio from video.
+    Extracts mono WAV audio from video at the given sample rate.
+    16 kHz is sufficient for RMS peak detection and is faster than 22 kHz.
     Returns path to WAV file, or None if extraction fails (silent video).
     """
     wav_path = os.path.join(tmp_dir, "audio.wav")
     cmd = [
         "ffmpeg", "-y",
         "-i", video_path,
-        "-ac", "1",           # mono
-        "-ar", "22050",       # 22 kHz sample rate
-        "-vn",                # no video
+        "-ac", "1",                  # mono
+        "-ar", str(sample_rate),     # sample rate
+        "-vn",                       # no video
         wav_path,
         "-loglevel", "error"
     ]
@@ -107,10 +128,8 @@ def compute_audio_scores(wav_path: str, video_duration: float) -> np.ndarray:
         chunk = data[start:end]
         if len(chunk) == 0:
             continue
-        # RMS energy — captures "loud" moments well
         scores[sec] = np.sqrt(np.mean(chunk ** 2))
 
-    # Normalize to [0, 1]
     max_val = scores.max()
     if max_val > 0:
         scores /= max_val
@@ -122,10 +141,19 @@ def compute_audio_scores(wav_path: str, video_duration: float) -> np.ndarray:
 # Step 3: Compute per-second motion scores from frame differences
 # ──────────────────────────────────────────────────────────────────────────────
 
-def compute_motion_scores(video_path: str, video_duration: float) -> np.ndarray:
+def compute_motion_scores(
+    video_path: str,
+    video_duration: float,
+    frame_sample: int = FRAME_SAMPLE_LEGACY,
+    pre_scaled: bool = False,
+) -> np.ndarray:
     """
-    Reads video frames (every FRAME_SAMPLE-th), computes absolute diff between
+    Reads video frames (every frame_sample-th), computes absolute diff between
     consecutive frames, groups by second, averages → motion score per second.
+
+    pre_scaled=True: video is already low-res (e.g. 640px wide from PrepareAnalysisAssetsJob),
+    so the per-frame cv2.resize() is skipped entirely.
+
     Returns normalized [0, 1] array.
     """
     cap = cv2.VideoCapture(video_path)
@@ -142,10 +170,12 @@ def compute_motion_scores(video_path: str, video_duration: float) -> np.ndarray:
         if not ret:
             break
 
-        # Only process every FRAME_SAMPLE-th frame
-        if frame_idx % FRAME_SAMPLE == 0:
+        if frame_idx % frame_sample == 0:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = cv2.resize(gray, (320, 180))  # downscale for speed
+
+            if not pre_scaled:
+                # Legacy path: resize full-res frame down for speed
+                gray = cv2.resize(gray, (320, 180))
 
             if prev_gray is not None:
                 diff  = cv2.absdiff(gray, prev_gray)
@@ -160,13 +190,11 @@ def compute_motion_scores(video_path: str, video_duration: float) -> np.ndarray:
 
     cap.release()
 
-    # Average per second
     motion = np.array([
         np.mean(s) if s else 0.0
         for s in second_scores
     ], dtype=np.float32)
 
-    # Normalize
     max_val = motion.max()
     if max_val > 0:
         motion /= max_val
@@ -190,24 +218,19 @@ def find_highlight_moments(
 ) -> list[dict]:
     """
     Merges audio + motion scores, finds peaks, groups nearby peaks into event
-    windows using pre_roll/post_roll padding, merges overlapping events within
-    merge_gap seconds, filters by min_score, and returns the top max_clips
-    events by score.
+    windows, filters by min_score, and returns the top max_clips events.
 
     Returns list of dicts: [{"start": int, "end": int, "score": int}, ...]
     """
-    # Pad shorter array so they're the same length
     length = max(len(audio_scores), len(motion_scores))
     a = np.pad(audio_scores,  (0, length - len(audio_scores)))
     m = np.pad(motion_scores, (0, length - len(motion_scores)))
 
     combined = AUDIO_WEIGHT * a + MOTION_WEIGHT * m
 
-    # Find raw peaks — small distance so nearby sub-peaks are kept for grouping
     peaks, _ = find_peaks(combined, distance=2, prominence=0.1)
 
     if len(peaks) == 0:
-        # Fallback: evenly spaced event windows
         print("[peaks] No peaks found, using evenly spaced fallback.", file=sys.stderr)
         step   = max(1, int(video_duration / max_clips))
         events = []
@@ -219,10 +242,8 @@ def find_highlight_moments(
             events.append({"start": start, "end": end, "score": score})
         return events
 
-    # Sort peaks chronologically
     peaks_sorted = sorted(peaks.tolist())
 
-    # Group peaks that are within merge_gap seconds of each other into one event
     groups = []
     current_group = [peaks_sorted[0]]
     for p in peaks_sorted[1:]:
@@ -233,7 +254,6 @@ def find_highlight_moments(
             current_group = [p]
     groups.append(current_group)
 
-    # Build event windows: pre_roll before first peak, post_roll after last peak
     events = []
     for group in groups:
         first_peak = group[0]
@@ -243,14 +263,12 @@ def find_highlight_moments(
         score = int(max(combined[p] for p in group) * 100)
         events.append({"start": start, "end": end, "score": score})
 
-    # Filter by user's minimum score threshold
     events = [e for e in events if e["score"] >= min_score]
 
     if not events:
         print(f"[peaks] All moments below min_score={min_score}, no clips will be generated.", file=sys.stderr)
         return []
 
-    # Keep top max_clips by score, then re-sort chronologically for clean output
     events.sort(key=lambda e: e["score"], reverse=True)
     top_events = events[:max_clips]
     top_events.sort(key=lambda e: e["start"])
@@ -259,7 +277,7 @@ def find_highlight_moments(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 5: Cut clips with FFmpeg
+# Step 5: Cut clips with FFmpeg (legacy all-in-one mode only)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def cut_clip(
@@ -274,7 +292,7 @@ def cut_clip(
     vf_filter: str,
 ) -> str:
     """
-    Cuts a clip from video_path using FFmpeg with the user's quality/resolution settings.
+    Cuts a clip from video_path using FFmpeg.
     Returns the output filename, or None on failure.
     """
     filename    = f"clip_{clip_index}.mp4"
@@ -283,15 +301,15 @@ def cut_clip(
 
     cmd = [
         "ffmpeg", "-y",
-        "-ss", str(start_sec),       # seek BEFORE -i for speed
+        "-ss", str(start_sec),
         "-i", video_path,
         "-t", str(duration),
-        "-vf", vf_filter,            # scale / crop+scale based on user settings
-        "-c:v", "libx264",           # H.264 (browser-compatible)
-        "-c:a", "aac",               # AAC audio
-        "-preset", preset,           # encoding speed vs compression tradeoff
-        "-crf", str(crf),            # quality target
-        "-movflags", "+faststart",   # streaming-ready
+        "-vf", vf_filter,
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-preset", preset,
+        "-crf", str(crf),
+        "-movflags", "+faststart",
         "-avoid_negative_ts", "1",
         output_path,
         "-loglevel", "error"
@@ -307,7 +325,7 @@ def cut_clip(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Main
+# Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_video_duration(video_path: str) -> float:
@@ -339,7 +357,7 @@ def generate_thumbnail(video_path: str, thumbnails_dir: str, clip_index: int, ti
         "-ss", str(time_sec),
         "-i", video_path,
         "-frames:v", "1",
-        "-q:v", "3",           # JPEG quality (2-5 is good)
+        "-q:v", "3",
         output_path,
         "-loglevel", "error"
     ]
@@ -353,82 +371,104 @@ def generate_thumbnail(video_path: str, thumbnails_dir: str, clip_index: int, ti
     return filename
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(description="ClutchClip highlight detector")
 
-    # ── Required ──────────────────────────────────────────────────────────────
-    parser.add_argument("--input",          required=True,  help="Path to source video")
-    parser.add_argument("--output-dir",     required=True,  help="Directory to save clips")
-    parser.add_argument("--thumbnails-dir", default=None,   help="Directory to save thumbnails")
+    # ── Source (legacy mode — one or the other set of args required) ──────────
+    parser.add_argument("--input",          default=None, help="Path to source video (legacy all-in-one mode)")
+    parser.add_argument("--output-dir",     default=None, help="Directory to save clips (legacy mode)")
+    parser.add_argument("--thumbnails-dir", default=None, help="Directory to save thumbnails (legacy mode)")
+
+    # ── Optimised mode: pre-generated analysis assets ─────────────────────────
+    parser.add_argument("--analysis-video",  default=None, help="Path to pre-generated low-res analysis video")
+    parser.add_argument("--analysis-audio",  default=None, help="Path to pre-extracted mono 16 kHz WAV")
+    parser.add_argument("--source-duration", type=float,   default=None, help="Duration of original source video (seconds)")
+
+    # ── Detect-only flag: output timestamps JSON, skip clip cutting ───────────
+    parser.add_argument("--detect-only", action="store_true",
+                        help="Output highlight timestamps only — skip clip cutting and thumbnails")
 
     # ── Detection settings (user preferences) ─────────────────────────────────
-    parser.add_argument("--clip-count",     type=int,   default=5,  help="Max clips to generate")
-    parser.add_argument("--pre-roll",       type=int,   default=3,  help="Seconds before peak")
-    parser.add_argument("--post-roll",      type=int,   default=3,  help="Seconds after peak")
-    parser.add_argument("--merge-gap",      type=int,   default=5,  help="Merge window (seconds)")
-    parser.add_argument("--min-score",      type=int,   default=50, help="Minimum intensity score (0-100)")
+    parser.add_argument("--clip-count",  type=int, default=5,  help="Max clips to generate")
+    parser.add_argument("--pre-roll",    type=int, default=3,  help="Seconds before peak")
+    parser.add_argument("--post-roll",   type=int, default=3,  help="Seconds after peak")
+    parser.add_argument("--merge-gap",   type=int, default=5,  help="Merge window (seconds)")
+    parser.add_argument("--min-score",   type=int, default=50, help="Minimum intensity score (0-100)")
 
-    # ── Output settings ───────────────────────────────────────────────────────
-    parser.add_argument("--quality",        default="high",     choices=["standard", "high", "smaller"])
-    parser.add_argument("--resolution",     default="1080p",    choices=["720p", "1080p"])
-    parser.add_argument("--aspect-ratio",   default="original", choices=["original", "vertical"])
+    # ── Output settings (legacy mode only) ────────────────────────────────────
+    parser.add_argument("--quality",      default="high",     choices=["standard", "high", "smaller"])
+    parser.add_argument("--resolution",   default="1080p",    choices=["720p", "1080p"])
+    parser.add_argument("--aspect-ratio", default="original", choices=["original", "vertical"])
 
     args = parser.parse_args()
 
-    video_path     = args.input
-    output_dir     = args.output_dir
-    thumbnails_dir = args.thumbnails_dir
+    # ── Decide mode ───────────────────────────────────────────────────────────
+    use_analysis_assets = args.analysis_video is not None and args.analysis_audio is not None
 
-    # ── Resolve quality → FFmpeg CRF + preset ─────────────────────────────────
+    if not use_analysis_assets and not args.input:
+        print(json.dumps({"error": "Either --input or (--analysis-video + --analysis-audio) must be provided."}))
+        sys.exit(1)
+
+    # ── Resolve duration ──────────────────────────────────────────────────────
+    if use_analysis_assets:
+        if args.source_duration is None:
+            # Fall back to probing the analysis video (less accurate but safe)
+            duration = get_video_duration(args.analysis_video)
+        else:
+            duration = args.source_duration
+    else:
+        if not os.path.exists(args.input):
+            print(json.dumps({"error": f"Video not found: {args.input}"}))
+            sys.exit(1)
+        duration = get_video_duration(args.input)
+
+    print(f"[info] Duration: {duration:.1f}s  mode={'analysis-assets' if use_analysis_assets else 'legacy'}  detect-only={args.detect_only}", file=sys.stderr)
+
+    # ── Resolve quality / resolution for legacy clip-cutting ─────────────────
     quality_cfg   = QUALITY_PRESETS.get(args.quality, QUALITY_PRESETS["high"])
     crf           = quality_cfg["crf"]
     preset        = quality_cfg["preset"]
-
-    # ── Resolve resolution → output height ────────────────────────────────────
     output_height = RESOLUTION_MAP.get(args.resolution, 1080)
 
-    # ── Build FFmpeg -vf filter string ────────────────────────────────────────
     if args.aspect_ratio == "vertical":
-        # Center-crop to 9:16, then scale to target height
         vf_filter = f"crop=ih*9/16:ih,scale=-2:{output_height}"
     else:
-        # Preserve original aspect ratio, scale to target height
         vf_filter = f"scale=-2:{output_height}"
 
-    print(f"[settings] clips={args.clip_count} pre={args.pre_roll}s post={args.post_roll}s "
-          f"merge={args.merge_gap}s min_score={args.min_score} "
-          f"quality={args.quality}(crf={crf}) res={args.resolution} ratio={args.aspect_ratio}",
-          file=sys.stderr)
+    # ── Analysis: use pre-generated assets or extract inline ──────────────────
+    def run_analysis(tmp_dir: str):
+        if use_analysis_assets:
+            audio_path   = args.analysis_audio
+            analysis_vid = args.analysis_video
+            pre_scaled   = True
+            frame_sample = FRAME_SAMPLE_ANALYSIS
+        else:
+            audio_path   = extract_audio(args.input, tmp_dir)
+            analysis_vid = args.input
+            pre_scaled   = False
+            frame_sample = FRAME_SAMPLE_LEGACY
 
-    if not os.path.exists(video_path):
-        print(json.dumps({"error": f"Video not found: {video_path}"}))
-        sys.exit(1)
-
-    os.makedirs(output_dir, exist_ok=True)
-    if thumbnails_dir:
-        os.makedirs(thumbnails_dir, exist_ok=True)
-
-    print(f"[info] Processing: {video_path}", file=sys.stderr)
-
-    # Get duration
-    duration = get_video_duration(video_path)
-    print(f"[info] Duration: {duration:.1f}s", file=sys.stderr)
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-
-        # ── Audio scores ──────────────────────────────────────────────────────
-        wav_path = extract_audio(video_path, tmp_dir)
-        if wav_path:
-            audio_scores = compute_audio_scores(wav_path, duration)
+        # Audio scores
+        if audio_path and os.path.exists(audio_path):
+            audio_scores = compute_audio_scores(audio_path, duration)
             print(f"[audio] Computed {len(audio_scores)} second scores.", file=sys.stderr)
         else:
-            # No audio — use zeros (motion-only mode)
             audio_scores = np.zeros(int(np.ceil(duration)))
+            print("[audio] No audio — using zeros (motion-only mode).", file=sys.stderr)
 
-        # ── Motion scores ─────────────────────────────────────────────────────
-        print("[motion] Analyzing frames...", file=sys.stderr)
-        motion_scores = compute_motion_scores(video_path, duration)
+        # Motion scores
+        print(f"[motion] Analyzing frames (sample_every={frame_sample}, pre_scaled={pre_scaled})...", file=sys.stderr)
+        motion_scores = compute_motion_scores(analysis_vid, duration, frame_sample=frame_sample, pre_scaled=pre_scaled)
         print(f"[motion] Computed {len(motion_scores)} second scores.", file=sys.stderr)
+
+        return audio_scores, motion_scores
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        audio_scores, motion_scores = run_analysis(tmp_dir)
 
         # ── Find highlights ───────────────────────────────────────────────────
         moments = find_highlight_moments(
@@ -441,10 +481,17 @@ def main():
         )
         print(f"[peaks] Found {len(moments)} highlight moments.", file=sys.stderr)
 
-        # ── Cut clips ─────────────────────────────────────────────────────────
-        # clip_out_index counts only successfully saved clips so output filenames
-        # are always sequential (clip_1.mp4, clip_2.mp4, …) regardless of FFmpeg
-        # failures on earlier moments.
+        # ── Detect-only: output timestamps and exit ───────────────────────────
+        if args.detect_only:
+            # IMPORTANT: last line of stdout — Laravel DetectHighlightsJob parses it.
+            print(json.dumps({"highlights": moments}))
+            return
+
+        # ── Legacy: cut clips + generate thumbnails ───────────────────────────
+        os.makedirs(args.output_dir, exist_ok=True)
+        if args.thumbnails_dir:
+            os.makedirs(args.thumbnails_dir, exist_ok=True)
+
         clips = []
         clip_out_index = 0
         for i, event in enumerate(moments, start=1):
@@ -455,32 +502,30 @@ def main():
 
             clip_out_index += 1
             filename = cut_clip(
-                video_path, output_dir, clip_out_index, start, end,
+                args.input, args.output_dir, clip_out_index, start, end,
                 output_height=output_height,
                 crf=crf,
                 preset=preset,
                 vf_filter=vf_filter,
             )
             if not filename:
-                clip_out_index -= 1  # reclaim index so next success is sequential
+                clip_out_index -= 1
                 continue
-            if filename:
-                # Generate thumbnail at the midpoint of the clip
-                thumbnail = None
-                if thumbnails_dir:
-                    mid_sec = start + (end - start) // 2
-                    thumbnail = generate_thumbnail(video_path, thumbnails_dir, clip_out_index, mid_sec)
 
-                clips.append({
-                    "start":     start,
-                    "end":       end,
-                    "filename":  filename,
-                    "score":     event["score"],
-                    "thumbnail": thumbnail,
-                })
+            thumbnail = None
+            if args.thumbnails_dir:
+                mid_sec   = start + (end - start) // 2
+                thumbnail = generate_thumbnail(args.input, args.thumbnails_dir, clip_out_index, mid_sec)
 
-        # ── Output JSON ───────────────────────────────────────────────────────
-        # IMPORTANT: this must be the last line of stdout — Laravel parses it.
+            clips.append({
+                "start":     start,
+                "end":       end,
+                "filename":  filename,
+                "score":     event["score"],
+                "thumbnail": thumbnail,
+            })
+
+        # IMPORTANT: last line of stdout — Laravel ProcessVideoJob parses it.
         print(json.dumps({"clips": clips, "duration": duration}))
 
 
