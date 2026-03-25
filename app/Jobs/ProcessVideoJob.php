@@ -77,9 +77,11 @@ class ProcessVideoJob implements ShouldQueue
             escapeshellarg($settings['aspect_ratio']),
         );
 
+        $processTimeout = 580;
+        Log::info("[ProcessVideoJob] DIAG python_bin={$pythonBin} job_timeout={$this->timeout} process_timeout={$processTimeout} queue=" . config('queue.default'));
         Log::info("[ProcessVideoJob] Running: {$command}");
 
-        $result = Process::timeout(580)->run($command);
+        $result = Process::timeout($processTimeout)->run($command);
 
         if (!$result->successful()) {
             Log::error("[ProcessVideoJob] Python failed: " . $result->errorOutput());
