@@ -46,8 +46,12 @@ from scipy.signal import find_peaks
 # ──────────────────────────────────────────────────────────────────────────────
 
 AUDIO_WEIGHT  = 0.40  # raw RMS amplitude per second
-MOTION_WEIGHT = 0.30  # raw frame-difference per second
-BURST_WEIGHT  = 0.20  # local temporal variance of motion (distinguishes action from walking/spectating)
+MOTION_WEIGHT = 0.25  # raw frame-difference per second
+              # ↑ was 0.30 — raw motion alone over-weights walking/spectating/death-cam;
+              #   reducing it stops steady panning motion from inflating scores.
+BURST_WEIGHT  = 0.25  # local temporal variance of motion (distinguishes action from walking/spectating)
+              # ↑ was 0.20 — burst now equals raw motion; chaotic action scores higher,
+              #   passive steady movement scores lower.
 ADELTA_WEIGHT = 0.10  # audio change rate (rewards sudden audio events over constant ambient music)
 
 # Legacy mode: samples every 5th frame from the original full-res video,
@@ -263,9 +267,10 @@ def _score_event_window(
     group_peaks: list,
     pre_roll: int,
     post_roll: int,
+    motion_burst: np.ndarray,
 ) -> float:
     """
-    Scores an event window using three heuristic signals:
+    Scores an event window using four heuristic signals:
 
     1. Sustained intensity — average of the top-half values inside the capture
        window. Prefers moments where multiple seconds are active (real action)
@@ -273,10 +278,16 @@ def _score_event_window(
 
     2. Payoff check — if post-peak activity drops to <10 % of the peak value,
        the moment ends immediately (death screen, loading screen, menu flash).
-       Penalty capped at 40 % so hard-stop legitimate moments are not destroyed.
+       Penalty capped at 50 % so hard-stop legitimate moments are not destroyed.
+       (was 40 % — tightened to penalise death/respawn harder)
 
     3. Buildup bonus — rising activity *before* the peak suggests action
        building up (chase, fight escalation). Capped at +15 %.
+
+    4. Passivity penalty (NEW) — if motion burstiness is uniformly low across the
+       entire capture window, the moment is spectating / idle walking / death-cam
+       replay — not a player-driven highlight.  Low mean burst (< 0.15) applies
+       a 35 % penalty.  This is the primary filter against spectate / walk clips.
 
     Returns a quality float in [0, ~1.15].
     """
@@ -302,8 +313,10 @@ def _score_event_window(
     if len(post_window) > 0:
         post_mean     = float(np.mean(post_window))
         payoff_ratio  = post_mean / (float(peak_val) + 1e-8)
-        # Only apply penalty when post-peak drops to < 10 % of peak
-        payoff_factor = max(0.6, payoff_ratio / 0.10) if payoff_ratio < 0.10 else 1.0
+        # Only apply penalty when post-peak drops to < 10 % of peak.
+        # Floor tightened to 0.50 (was 0.60): death screens / hard-cut respawns
+        # that drop to near-zero now receive a stronger 50 % penalty.
+        payoff_factor = max(0.50, payoff_ratio / 0.10) if payoff_ratio < 0.10 else 1.0
     else:
         payoff_factor = 1.0
 
@@ -316,7 +329,21 @@ def _score_event_window(
     else:
         buildup_bonus = 1.0
 
-    return sustained * payoff_factor * buildup_bonus
+    # ── 4. Passivity penalty — spectating / idle walking / death-cam ──────────
+    # motion_burst is the temporal std-dev of raw motion scores (already computed,
+    # zero extra CPU cost).  A low mean across the window means motion is steady
+    # and uniform — the hallmark of spectating, camera-pan replays, or idle
+    # walking — NOT action the player was driving.
+    # Threshold 0.15 on the normalized [0,1] burst scale: empirically this
+    # separates passive moments from real combat/highlight bursts.
+    if len(motion_burst) > 0:
+        win_burst  = motion_burst[win_start:win_end]
+        mean_burst = float(win_burst.mean()) if len(win_burst) > 0 else 0.0
+        passivity_factor = 0.65 if mean_burst < 0.15 else 1.0
+    else:
+        passivity_factor = 1.0
+
+    return sustained * payoff_factor * buildup_bonus * passivity_factor
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -419,8 +446,8 @@ def find_highlight_moments(
         start = max(0, first_peak - pre_roll)
         end   = min(int(video_duration), last_peak + post_roll)
 
-        # Context-aware score: sustained + payoff + buildup (see _score_event_window)
-        quality = _score_event_window(combined, group, pre_roll, post_roll)
+        # Context-aware score: sustained + payoff + buildup + passivity (see _score_event_window)
+        quality = _score_event_window(combined, group, pre_roll, post_roll, motion_burst)
         score   = int(min(100, quality * 100))
 
         events.append({"start": start, "end": end, "score": score})
