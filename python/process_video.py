@@ -335,6 +335,17 @@ def _score_event_window(
         when spike_width_factor didn't fire (nearby peaks inflated width).
         Penalty: 45–50 %.
 
+    13. Weak-payoff × bad-ending compound — checks engagement intensity
+        RELATIVE to ending quality.  A multi-kill ending in death = still a
+        highlight (strong engagement justifies the ending).  An assist ending
+        in death = not worth watching (weak engagement + bad ending).
+        Penalty: 40–60 % depending on engagement seconds.
+
+    14. Sustained follow-through — checks whether post-peak signal shows a
+        qualitative escalation (secondary peak = fight broke out after setup)
+        vs. monotonic decay (setup fizzled).  Catches utility setups that
+        dodge the narrow-spike gate.  Penalty: 30–55 %.
+
     Returns a quality float in [0, ~1.3].  Multiply by 100 for score 0–100.
     """
     n          = len(combined)
@@ -592,6 +603,111 @@ def _score_event_window(
                     else:
                         audio_utility_factor = 0.55
 
+    # ── 13. Weak-payoff × bad-ending compound penalty ───────────────────────
+    # Previous factors check engagement quality and ending quality separately.
+    # A multi-kill that ends in death = still a highlight (the fight WAS the
+    # payoff).  An assist that ends in death = not worth watching (the payoff
+    # was supposed to be the outcome, and the outcome was failure).
+    #
+    # This factor explicitly asks: "Given how this clip ends, was the
+    # engagement intense enough to justify a bad ending?"
+    #
+    # Engagement strength: count seconds in the capture window above 40% of
+    # peak.  This is a broader measure than spike_width's 50% — it captures
+    # the full "time the viewer feels engaged."
+    #
+    # Ending quality: activity in the last 3–4 s of available post-peak data.
+    # A bad ending = sub-15% of peak (death/spectate/inactivity).
+    #
+    # Strong engagement (≥ 6 s active) survives a bad ending — the fight
+    # itself was the highlight.  Weak engagement (< 4 s) with a bad ending
+    # gets heavily penalized — there's no highlight to redeem the failure.
+    weak_payoff_factor = 1.0
+    engagement_threshold = float(peak_val) * 0.40
+    engagement_seconds = int(np.sum(window >= engagement_threshold))
+
+    # Ending quality: check the last 3–4 s of available post-peak signal
+    ending_start = min(n, last_peak + 3)
+    ending_end   = min(n, last_peak + 7)
+    bad_ending   = False
+    if ending_end > ending_start and (n - last_peak) >= 4:
+        ending_window = combined[ending_start:ending_end]
+        if len(ending_window) > 0:
+            ending_mean  = float(np.mean(ending_window))
+            ending_ratio = ending_mean / (float(peak_val) + 1e-8)
+
+            # Confirm the ending is genuinely bad, not just a momentary dip:
+            # also check that motion burstiness collapsed (player not in
+            # control) to avoid penalising a fight where the player pauses
+            # briefly to reload or reposition.
+            ending_burst_bad = True
+            if len(motion_burst) > ending_start:
+                eb_slice = motion_burst[ending_start:min(len(motion_burst), ending_end)]
+                if len(eb_slice) > 0:
+                    ending_burst_bad = float(np.mean(eb_slice)) < 0.12
+
+            if ending_ratio < 0.15 and ending_burst_bad:
+                bad_ending = True
+
+    if bad_ending:
+        if engagement_seconds < 4:
+            # Weak engagement + bad ending → not a highlight
+            weak_payoff_factor = 0.40
+        elif engagement_seconds < 6:
+            # Moderate engagement + bad ending → marginal
+            weak_payoff_factor = 0.60
+
+    # ── 14. Sustained follow-through for setup/utility events ─────────────
+    # Factors 9 and 12 catch narrow spikes and impulse audio, but they miss
+    # utility bursts that dodge both gates (merged peaks inflate spike width;
+    # moderate audio onset misses the delta threshold).
+    #
+    # This factor checks whether the post-peak signal shows a *qualitative
+    # escalation* (a fight broke out after the setup) vs. just *monotonic
+    # decay* (utility fizzled into nothing).
+    #
+    # Shape analysis:
+    #   - Utility → fight: peak → brief dip → SECOND RISE (new local max
+    #     above 50% of peak_val in the 2–8 s post-peak window)
+    #   - Utility → nothing: peak → monotonic decay, no secondary rise
+    #
+    # Only penalise when the post-peak window is available (≥ 6 s of data
+    # after peak).  A secondary peak above 50% of peak_val = genuine
+    # follow-through; its absence + low mean = setup without payoff.
+    followthrough_factor = 1.0
+    ft_start = min(n, last_peak + 2)
+    ft_end   = min(n, last_peak + 8)
+
+    if (n - last_peak) >= 6 and ft_end > ft_start:
+        ft_window = combined[ft_start:ft_end]
+        if len(ft_window) >= 3:
+            ft_max   = float(np.max(ft_window))
+            ft_mean  = float(np.mean(ft_window))
+            ft_max_ratio  = ft_max  / (float(peak_val) + 1e-8)
+            ft_mean_ratio = ft_mean / (float(peak_val) + 1e-8)
+
+            has_secondary_peak = ft_max_ratio > 0.50
+
+            if not has_secondary_peak and ft_mean_ratio < 0.30:
+                # No secondary rise and low overall follow-through
+                # = setup / utility / isolated burst that went nowhere.
+                #
+                # Confirm with coherence: if post-peak also lacks audio-motion
+                # alignment, this is very likely utility-only.
+                ft_coherent = True
+                if audio_raw is not None and motion_raw is not None:
+                    ft_a = float(np.mean(audio_raw[ft_start:ft_end]))
+                    ft_m = float(np.mean(motion_raw[ft_start:ft_end]))
+                    ft_coherent = ft_a > 0.18 and ft_m > 0.18
+
+                if not ft_coherent:
+                    # No secondary peak, low mean, incoherent channels
+                    followthrough_factor = 0.45
+                else:
+                    # Low follow-through but channels are aligned — might be
+                    # a quiet sustained engagement.  Mild penalty only.
+                    followthrough_factor = 0.70
+
     return (sustained
             * spike_width_factor
             * payoff_factor
@@ -604,7 +720,9 @@ def _score_event_window(
             * utility_reject_factor
             * tail_factor
             * coherence_factor
-            * audio_utility_factor)
+            * audio_utility_factor
+            * weak_payoff_factor
+            * followthrough_factor)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
