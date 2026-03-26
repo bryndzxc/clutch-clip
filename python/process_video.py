@@ -269,6 +269,8 @@ def _score_event_window(
     post_roll: int,
     motion_burst: np.ndarray,
     motion_raw: np.ndarray | None = None,
+    audio_raw: np.ndarray | None = None,
+    audio_delta: np.ndarray | None = None,
 ) -> float:
     """
     Scores an event window using six heuristic signals that together model the
@@ -318,6 +320,20 @@ def _score_event_window(
        certainly a grenade / smoke / ability with no follow-up fight.
        Combined with spike_width_factor this can reach 0.34× (≈ score 34 for
        a peak of 1.0), which reliably drops below min_score=50.
+
+    10. Clip tail quality — examines the last 2–3 s of the actual clip window
+        (what the viewer sees at the end).  Low tail activity = clip ends on
+        death / silence.  Penalty: 25–45 %.
+
+    11. Post-peak audio-motion coherence — real engagements have BOTH audio
+        AND motion active after the peak.  Single-channel activity (ambient
+        music alone, or camera pan alone) indicates death-cam, menu, or
+        respawn.  Penalty: 35–55 %.
+
+    12. Audio-isolated utility detection — uses audio_delta to detect the
+        impulse-then-silence signature of grenades/smokes/abilities even
+        when spike_width_factor didn't fire (nearby peaks inflated width).
+        Penalty: 45–50 %.
 
     Returns a quality float in [0, ~1.3].  Multiply by 100 for score 0–100.
     """
@@ -387,7 +403,18 @@ def _score_event_window(
         elif ext_ratio > 0.35:
             # Player is still active 4–8 s after the peak: fight continued,
             # objective captured, chase persisted — genuine highlight follow-through.
-            continuation_bonus = 1.15 if ext_ratio > 0.50 else 1.10
+            # Require audio-motion coherence: both channels must be active in
+            # the extended window, not just one channel inflating combined.
+            _coherent = True
+            if audio_raw is not None and motion_raw is not None:
+                ext_audio_mean = float(np.mean(audio_raw[ext_start:ext_end]))
+                ext_motion_mean = float(np.mean(motion_raw[ext_start:ext_end]))
+                # Both channels must contribute; one alone = ambient noise
+                _coherent = ext_audio_mean > 0.15 and ext_motion_mean > 0.15
+            if _coherent:
+                continuation_bonus = 1.15 if ext_ratio > 0.50 else 1.10
+            else:
+                continuation_bonus = 1.0  # single-channel activity, not real engagement
 
     # ── 5. Buildup bonus ──────────────────────────────────────────────────────
     pre_start  = max(0, first_peak - 4)
@@ -478,6 +505,93 @@ def _score_event_window(
                 # Narrow spike + weak follow-up = marginal
                 utility_reject_factor = 0.65  # combined: 0.75 * 0.65 ≈ 0.49
 
+    # ── 10. Clip tail quality — viewer sees the ending ──────────────────────
+    # The clip window extends to last_peak + post_roll.  If the final 2–3 s
+    # of the *actual clip* show low activity, the viewer's last impression is
+    # "nothing happened" or "they died."  This is independent of the post-peak
+    # checks (which measure relative to the peak), because even a clip with a
+    # decent peak can *end* on a whimper if post_roll extends into dead air.
+    tail_factor = 1.0
+    tail_len    = min(3, post_roll)
+    tail_start  = max(0, win_end - tail_len)
+    if tail_start < win_end and tail_start < n:
+        tail_window = combined[tail_start:min(win_end, n)]
+        if len(tail_window) > 0:
+            tail_mean  = float(np.mean(tail_window))
+            tail_ratio = tail_mean / (float(peak_val) + 1e-8)
+            if tail_ratio < 0.12:
+                # Clip ends in near-silence / death screen
+                tail_factor = 0.55
+            elif tail_ratio < 0.20:
+                # Clip ends weakly
+                tail_factor = 0.75
+
+    # ── 11. Post-peak audio-motion coherence ──────────────────────────────────
+    # A real engagement has BOTH audio (gunfire, abilities, voice) AND motion
+    # (player moving, camera reacting) active simultaneously after the peak.
+    # Death-cam: motion only (camera pans, but audio drops to ambient).
+    # Grenade aftermath: neither (explosion done, player hasn't moved).
+    # Menu/respawn: possible audio (music) but no reactive motion.
+    #
+    # This catches the gap where `combined` stays above thresholds because
+    # a single channel (ambient music or slow camera pan) inflates it,
+    # even though there's no actual continued fight.
+    coherence_factor = 1.0
+    if audio_raw is not None and motion_raw is not None:
+        coh_start = min(n, last_peak + 1)
+        coh_end   = min(n, last_peak + 5)  # 4s post-peak
+        if coh_end > coh_start:
+            coh_audio  = audio_raw[coh_start:coh_end]
+            coh_motion = motion_raw[coh_start:coh_end]
+            coh_burst  = motion_burst[coh_start:coh_end] if len(motion_burst) > coh_start else np.array([])
+
+            a_active = float(np.mean(coh_audio))  > 0.20
+            m_active = float(np.mean(coh_motion)) > 0.20
+            b_active = float(np.mean(coh_burst))  > 0.10 if len(coh_burst) > 0 else False
+
+            if not a_active and not m_active:
+                # Total post-peak silence — strongest penalty
+                coherence_factor = 0.45
+            elif not a_active and m_active and not b_active:
+                # Motion but no audio, no burst = death-cam / spectate panning
+                coherence_factor = 0.60
+            elif a_active and not m_active:
+                # Audio but no motion = menu screen with music, or respawn lobby
+                coherence_factor = 0.65
+
+    # ── 12. Audio-isolated utility detection ──────────────────────────────────
+    # Factor 9 only fires when spike_width_factor < 1.0 (narrow spike).
+    # But nearby peaks can inflate high_count to 4+, skipping the entire
+    # utility path even for an obvious grenade/smoke burst.
+    #
+    # This factor uses audio_delta (rate of audio change) to detect the
+    # utility-burst signature directly: a single sharp audio spike (high
+    # delta at peak) followed by rapid audio drop (high delta 1-2s later,
+    # then near-zero delta).  Game-agnostic: grenades, smokes, abilities,
+    # and flash-bangs all share this impulse-then-silence audio shape.
+    audio_utility_factor = 1.0
+    if audio_delta is not None and len(audio_delta) > 0:
+        peak_idx = min(last_peak, len(audio_delta) - 1)
+        peak_adelta = float(audio_delta[peak_idx])
+        # High audio delta at peak = sharp audio onset
+        if peak_adelta > 0.50:
+            # Check if audio delta drops to near-zero within 3s (impulse, not sustained)
+            ad_post_start = min(len(audio_delta), last_peak + 2)
+            ad_post_end   = min(len(audio_delta), last_peak + 5)
+            if ad_post_end > ad_post_start:
+                post_adelta = audio_delta[ad_post_start:ad_post_end]
+                post_adelta_mean = float(np.mean(post_adelta))
+                if post_adelta_mean < 0.10:
+                    # Impulse audio → silence: classic utility signature
+                    # Only penalize if there's no sustained motion engagement
+                    if motion_raw is not None:
+                        post_m = motion_raw[ad_post_start:ad_post_end]
+                        post_m_mean = float(np.mean(post_m))
+                        if post_m_mean < 0.25:
+                            audio_utility_factor = 0.50
+                    else:
+                        audio_utility_factor = 0.55
+
     return (sustained
             * spike_width_factor
             * payoff_factor
@@ -487,7 +601,10 @@ def _score_event_window(
             * passivity_factor
             * cliff_factor
             * deathcam_factor
-            * utility_reject_factor)
+            * utility_reject_factor
+            * tail_factor
+            * coherence_factor
+            * audio_utility_factor)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -593,7 +710,10 @@ def find_highlight_moments(
         end   = min(int(video_duration), last_peak + post_roll)
 
         # Context-aware score: sustained + payoff + buildup + passivity (see _score_event_window)
-        quality = _score_event_window(combined, group, pre_roll, post_roll, motion_burst, motion_raw=m)
+        quality = _score_event_window(
+            combined, group, pre_roll, post_roll, motion_burst,
+            motion_raw=m, audio_raw=a, audio_delta=audio_delta,
+        )
         score   = int(min(100, quality * 100))
 
         events.append({"start": start, "end": end, "score": score})
