@@ -188,6 +188,12 @@ return [
             'password' => env('REDIS_PASSWORD'),
             'port' => env('REDIS_PORT', '6379'),
             'database' => env('REDIS_QUEUE_DB', '2'),
+            // timeout: max seconds to wait when establishing a new connection.
+            'timeout' => (int) env('REDIS_QUEUE_TIMEOUT', 5),
+            // read_timeout: set to -1 so phpredis does not fire a read-timeout
+            // before BLPOP returns naturally. block_for (in queue.php) already
+            // bounds how long any single BLPOP call can block, so -1 is safe.
+            'read_timeout' => (float) env('REDIS_QUEUE_READ_TIMEOUT', -1),
             'max_retries' => env('REDIS_MAX_RETRIES', 3),
             'backoff_algorithm' => env('REDIS_BACKOFF_ALGORITHM', 'decorrelated_jitter'),
             'backoff_base' => env('REDIS_BACKOFF_BASE', 100),

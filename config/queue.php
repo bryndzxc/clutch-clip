@@ -76,9 +76,12 @@ return [
             // Must exceed the longest job $timeout in the codebase.
             // CutClipsJob = 1800s — use 1980 (1800 + 10% buffer).
             'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 1980),
-            // block_for: 0 = blpop (blocking pop, worker sleeps until job arrives).
-            // More efficient than polling; null would use lpop instead.
-            'block_for' => 0,
+            // block_for: seconds per BLPOP cycle before returning nil and looping.
+            // DO NOT use 0 (indefinite) in production — firewalls/NAT silently drop
+            // idle TCP connections, causing "read error on connection" when the next
+            // job arrives. A finite value keeps the connection active and allows clean
+            // reconnects each cycle. Null would switch to lpop (polling) instead.
+            'block_for' => (int) env('REDIS_QUEUE_BLOCK_FOR', 5),
             'after_commit' => false,
         ],
 
