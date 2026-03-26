@@ -53,7 +53,7 @@ function StatusBadge({ status }) {
     const c = map[status] ?? map.queued;
     return (
         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${c.cls}`}>
-            {status === 'processing' && (
+            {PROCESSING_STATUSES.has(status) && !['queued', 'pending'].includes(status) && (
                 <span className="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" />
             )}
             {c.label}
@@ -63,12 +63,45 @@ function StatusBadge({ status }) {
 
 // ─── Processing state ─────────────────────────────────────────────────────────
 
-const PROCESSING_STEPS = [
-    { key: 'received',   label: 'Video received',       active: () => true },
-    { key: 'analyzing',  label: 'Analysing highlights',  active: (s) => ['probing','preparing_analysis_assets','detecting_highlights','processing',...Array.from(DONE_STATUSES)].includes(s) },
-    { key: 'cutting',    label: 'Cutting clips',         active: (s) => ['cutting_clips','generating_thumbnails',...Array.from(DONE_STATUSES)].includes(s) },
-    { key: 'generating', label: 'Generating thumbnails', active: (s) => ['generating_thumbnails',...Array.from(DONE_STATUSES)].includes(s) },
+// Ordered labels for the detailed checklist (index = step position)
+const PIPELINE_STEPS = [
+    { key: 'received',   label: 'Video received' },
+    { key: 'analyzing',  label: 'Analysing highlights' },
+    { key: 'cutting',    label: 'Cutting clips' },
+    { key: 'generating', label: 'Generating thumbnails' },
 ];
+
+// Canonical map: backend status → 0-based pipeline step index
+// A step at index i is "done" when STATUS_STEP_IDX[status] > i,
+// and "active" when STATUS_STEP_IDX[status] === i.
+// 4 = all steps complete (completed/done).
+const STATUS_STEP_IDX = {
+    queued:                    0,
+    pending:                   0,
+    probing:                   1,
+    preparing_analysis_assets: 1,
+    detecting_highlights:      1,
+    processing:                1, // legacy
+    cutting_clips:             2,
+    generating_thumbnails:     3,
+    completed:                 4,
+    done:                      4,
+};
+
+// Canonical map: backend status → 0-based track step index
+// Track steps: Upload(0) → Detect(1) → Generate(2) → Ready(3)
+const STATUS_TRACK_IDX = {
+    queued:                    0,
+    pending:                   0,
+    probing:                   1,
+    preparing_analysis_assets: 1,
+    detecting_highlights:      1,
+    processing:                1, // legacy
+    cutting_clips:             2,
+    generating_thumbnails:     2,
+    completed:                 3,
+    done:                      3,
+};
 
 const STEP_DELAYS = ['animate-fade-up', 'animate-fade-up-1', 'animate-fade-up-2', 'animate-fade-up-3'];
 
@@ -76,12 +109,8 @@ const STEP_DELAYS = ['animate-fade-up', 'animate-fade-up-1', 'animate-fade-up-2'
 const TRACK_STEPS = ['Upload', 'Detect', 'Generate', 'Ready'];
 
 function ProcessingView({ status, stageLabel, video }) {
-    // Map pipeline stage to which track step is active (0-based)
-    const trackActiveIdx = (() => {
-        if (['cutting_clips', 'generating_thumbnails'].includes(status)) return 2;
-        if (['probing', 'preparing_analysis_assets', 'detecting_highlights', 'processing'].includes(status)) return 1;
-        return 0;
-    })();
+    const pipelineIdx    = STATUS_STEP_IDX[status]  ?? 0;
+    const trackActiveIdx = STATUS_TRACK_IDX[status] ?? 0;
 
     return (
         <div className="mx-auto max-w-md animate-fade-up">
@@ -141,10 +170,9 @@ function ProcessingView({ status, stageLabel, video }) {
 
                 {/* Detailed step indicators */}
                 <div className="mt-6 text-left space-y-3">
-                    {PROCESSING_STEPS.map((step, i) => {
-                        const stepOn   = step.active(status);
-                        const isDone   = stepOn && i < trackActiveIdx;
-                        const isActive = stepOn && i === trackActiveIdx;
+                    {PIPELINE_STEPS.map((step, i) => {
+                        const isDone   = i < pipelineIdx;
+                        const isActive = i === pipelineIdx;
 
                         return (
                             <div key={step.key} className={`flex items-center gap-3 ${STEP_DELAYS[i]}`}>
