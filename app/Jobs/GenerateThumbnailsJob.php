@@ -52,7 +52,8 @@ class GenerateThumbnailsJob implements ShouldQueue
                 '-ss', (string) ($clip->duration / 2),  // seek within clip, not source
                 '-i', $clipAbs,
                 '-frames:v', '1',
-                '-q:v', '3',
+                '-vf', 'scale=480:-2',   // clip is 720p; 480p is sufficient for web card thumbnails
+                '-q:v', '5',             // -q:v 3 is near-lossless and overkill for thumbnails; 5 is still high quality
                 $thumbPath,
             ])) . ' 2>/dev/null', $out, $code);
 

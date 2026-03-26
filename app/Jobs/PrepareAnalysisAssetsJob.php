@@ -59,7 +59,7 @@ class PrepareAnalysisAssetsJob implements ShouldQueue
             // Output 1: low-res silent analysis video
             '-map', '0:v:0',
             '-vf', 'scale=640:-2',
-            '-c:v', 'libx264', '-crf', '28', '-preset', 'ultrafast',
+            '-c:v', 'libx264', '-crf', '35', '-preset', 'ultrafast',
             '-an',
             $analysisVideo,
             // Output 2: mono 16 kHz WAV (optional — skipped if no audio stream)
