@@ -52,9 +52,12 @@ MOTION_WEIGHT = 0.5   # weight for frame-difference score
 # then resizes each frame to 320×180 for the diff.
 FRAME_SAMPLE_LEGACY = 5
 
-# Optimised mode: the analysis video is already 640px wide, so no per-frame
-# resize is needed. Sampling every 10th frame cuts work by ~8× vs legacy.
-FRAME_SAMPLE_ANALYSIS = 10
+# Optimised mode: the analysis video is 640px wide and capped at 15 fps
+# (set in PrepareAnalysisAssetsJob via ',fps=15' VF filter).
+# Sampling every 5th frame of a 15 fps video → 3 fps of decoded frames,
+# giving ~3 samples per 1-second bucket.  For a 60 fps source this is ~75 %
+# fewer OpenCV loop iterations vs the old 10-skip-on-uncapped approach.
+FRAME_SAMPLE_ANALYSIS = 5
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Quality presets → FFmpeg CRF + preset flag
@@ -212,6 +215,71 @@ def compute_motion_scores(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Step 3b: Context-aware event window scorer
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _score_event_window(
+    combined: np.ndarray,
+    group_peaks: list,
+    pre_roll: int,
+    post_roll: int,
+) -> float:
+    """
+    Scores an event window using three heuristic signals:
+
+    1. Sustained intensity — average of the top-half values inside the capture
+       window. Prefers moments where multiple seconds are active (real action)
+       over a single spike surrounded by silence (flash / kill-cam cut).
+
+    2. Payoff check — if post-peak activity drops to <10 % of the peak value,
+       the moment ends immediately (death screen, loading screen, menu flash).
+       Penalty capped at 40 % so hard-stop legitimate moments are not destroyed.
+
+    3. Buildup bonus — rising activity *before* the peak suggests action
+       building up (chase, fight escalation). Capped at +15 %.
+
+    Returns a quality float in [0, ~1.15].
+    """
+    n          = len(combined)
+    first_peak = group_peaks[0]
+    last_peak  = group_peaks[-1]
+    peak_val   = max(combined[min(p, n - 1)] for p in group_peaks)
+
+    # ── 1. Sustained intensity ────────────────────────────────────────────────
+    win_start = max(0, first_peak - pre_roll)
+    win_end   = min(n, last_peak + post_roll + 1)
+    window    = combined[win_start:win_end]
+    if len(window) > 0:
+        sorted_w  = np.sort(window)[::-1]
+        sustained = float(np.mean(sorted_w[: max(1, len(sorted_w) // 2)]))
+    else:
+        sustained = float(peak_val)
+
+    # ── 2. Payoff check ───────────────────────────────────────────────────────
+    post_start  = min(n, last_peak + 1)
+    post_end    = min(n, last_peak + 4)
+    post_window = combined[post_start:post_end]
+    if len(post_window) > 0:
+        post_mean     = float(np.mean(post_window))
+        payoff_ratio  = post_mean / (float(peak_val) + 1e-8)
+        # Only apply penalty when post-peak drops to < 10 % of peak
+        payoff_factor = max(0.6, payoff_ratio / 0.10) if payoff_ratio < 0.10 else 1.0
+    else:
+        payoff_factor = 1.0
+
+    # ── 3. Buildup bonus ──────────────────────────────────────────────────────
+    pre_start  = max(0, first_peak - 4)
+    pre_window = combined[pre_start:first_peak]
+    if len(pre_window) >= 2:
+        trend         = float(pre_window[-1]) - float(pre_window[0])
+        buildup_bonus = 1.0 + max(0.0, min(0.15, trend))
+    else:
+        buildup_bonus = 1.0
+
+    return sustained * payoff_factor * buildup_bonus
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Step 4: Combine scores, group peaks into event windows
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -229,6 +297,17 @@ def find_highlight_moments(
     Merges audio + motion scores, finds peaks, groups nearby peaks into event
     windows, filters by min_score, and returns the top max_clips events.
 
+    Improvements over the original:
+    - 3-second rolling average smoothing before peak detection suppresses
+      single-second noise (camera flashes, HUD blinks, brief menu overlays).
+    - Baseline height threshold skips flat / idle segments.
+    - Higher prominence (0.15) reduces false-positive peaks; two-tier fallback
+      (retry at 0.05 before evenly-spaced) avoids over-filtering real clips.
+    - _score_event_window() replaces raw max(peak): uses sustained intensity,
+      payoff check, and build-up bonus for cross-game quality scoring.
+    - Diversity-aware greedy selection avoids clustered clips from one short
+      burst while ignoring the rest of the video.
+
     Returns list of dicts: [{"start": int, "end": int, "score": int}, ...]
     """
     length = max(len(audio_scores), len(motion_scores))
@@ -237,7 +316,21 @@ def find_highlight_moments(
 
     combined = AUDIO_WEIGHT * a + MOTION_WEIGHT * m
 
-    peaks, _ = find_peaks(combined, distance=2, prominence=0.1)
+    # Smooth with 3-second rolling average to reduce single-second noise spikes.
+    # Peak detection uses smoothed; scoring uses the original combined values.
+    kernel   = np.ones(3) / 3.0
+    smoothed = np.convolve(combined, kernel, mode='same')
+
+    # Compute baseline from the 25th percentile of "active" seconds (>5 % level).
+    # Used as a minimum height so idle / menu-heavy segments produce no peaks.
+    active   = combined[combined > 0.05]
+    baseline = float(np.percentile(active, 25)) if len(active) >= 10 else 0.0
+
+    peaks, _ = find_peaks(smoothed, distance=2, prominence=0.15, height=max(0.05, baseline))
+
+    if len(peaks) == 0:
+        # Relaxed retry before falling back to evenly spaced clips
+        peaks, _ = find_peaks(smoothed, distance=2, prominence=0.05)
 
     if len(peaks) == 0:
         print("[peaks] No peaks found, using evenly spaced fallback.", file=sys.stderr)
@@ -269,7 +362,11 @@ def find_highlight_moments(
         last_peak  = group[-1]
         start = max(0, first_peak - pre_roll)
         end   = min(int(video_duration), last_peak + post_roll)
-        score = int(max(combined[p] for p in group) * 100)
+
+        # Context-aware score: sustained + payoff + buildup (see _score_event_window)
+        quality = _score_event_window(combined, group, pre_roll, post_roll)
+        score   = int(min(100, quality * 100))
+
         events.append({"start": start, "end": end, "score": score})
 
     events = [e for e in events if e["score"] >= min_score]
@@ -278,11 +375,33 @@ def find_highlight_moments(
         print(f"[peaks] All moments below min_score={min_score}, no clips will be generated.", file=sys.stderr)
         return []
 
+    # Diversity-aware greedy selection:
+    # Sort by score DESC, then pick events that are at least min_gap seconds
+    # apart from already-selected ones.  Falls back to filling remaining slots
+    # by score so clip count is preserved even with tight temporal distribution.
+    min_gap = max(merge_gap, pre_roll + post_roll + 2)
     events.sort(key=lambda e: e["score"], reverse=True)
-    top_events = events[:max_clips]
-    top_events.sort(key=lambda e: e["start"])
 
-    return top_events
+    selected: list[dict] = []
+    for event in events:
+        too_close = any(abs(event["start"] - sel["start"]) < min_gap for sel in selected)
+        if not too_close:
+            selected.append(event)
+        if len(selected) >= max_clips:
+            break
+
+    # Fill remaining slots with next-best events if diversity filtering fell short
+    if len(selected) < max_clips:
+        selected_ids = {id(e) for e in selected}
+        for event in events:
+            if id(event) not in selected_ids:
+                selected.append(event)
+                selected_ids.add(id(event))
+            if len(selected) >= max_clips:
+                break
+
+    selected.sort(key=lambda e: e["start"])
+    return selected
 
 
 # ──────────────────────────────────────────────────────────────────────────────

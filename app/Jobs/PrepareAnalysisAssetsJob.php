@@ -58,7 +58,11 @@ class PrepareAnalysisAssetsJob implements ShouldQueue
             '-y', '-i', $source,
             // Output 1: low-res silent analysis video
             '-map', '0:v:0',
-            '-vf', 'scale=640:-2',
+            // fps=15 caps the analysis video regardless of source frame rate.
+            // A 60 fps game capture becomes 15 fps here, reducing total frames
+            // for OpenCV to iterate by ~75 % with no meaningful impact on the
+            // 1-second scoring buckets Python uses.
+            '-vf', 'scale=640:-2,fps=15',
             '-c:v', 'libx264', '-crf', '35', '-preset', 'ultrafast',
             '-an',
             $analysisVideo,
