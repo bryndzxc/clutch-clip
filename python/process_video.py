@@ -270,57 +270,109 @@ def _score_event_window(
     motion_burst: np.ndarray,
 ) -> float:
     """
-    Scores an event window using four heuristic signals:
+    Scores an event window using six heuristic signals that together model the
+    arc of a gaming highlight:  setup → engagement → payoff → continuation.
 
     1. Sustained intensity — average of the top-half values inside the capture
        window. Prefers moments where multiple seconds are active (real action)
-       over a single spike surrounded by silence (flash / kill-cam cut).
+       over a single spike surrounded by silence.
 
-    2. Payoff check — if post-peak activity drops to <10 % of the peak value,
-       the moment ends immediately (death screen, loading screen, menu flash).
-       Penalty capped at 50 % so hard-stop legitimate moments are not destroyed.
-       (was 40 % — tightened to penalise death/respawn harder)
+    2. Spike width check — counts how many seconds in the window reach ≥ 50 %
+       of the peak value.  Fewer than 4 seconds = narrow spike:
+         - utility throw / grenade / ability burst (1–2 s peak then done)
+         - very brief losing skirmish with no continuation
+       Real engagements sustain 4+ seconds of high activity.  Narrow spikes
+       receive a 25 % score penalty.
 
-    3. Buildup bonus — rising activity *before* the peak suggests action
-       building up (chase, fight escalation). Capped at +15 %.
+    3. Immediate payoff — if the 1–3 s after the peak drops to < 10 % of peak,
+       the moment hard-stopped (death, loading screen, menu flash).
+       Penalty capped at 50 %.
 
-    4. Passivity penalty (NEW) — if motion burstiness is uniformly low across the
-       entire capture window, the moment is spectating / idle walking / death-cam
-       replay — not a player-driven highlight.  Low mean burst (< 0.15) applies
-       a 35 % penalty.  This is the primary filter against spectate / walk clips.
+    4. Extended collapse / continuation — looks 4–8 s after the peak to
+       distinguish confirmed failure from a momentary dip:
+         - BOTH immediate AND extended near-zero → confirmed death/respawn
+           → additional 30 % penalty on top of the immediate payoff penalty
+         - Extended activity stays > 35 % of peak → player is still alive,
+           action continued → +10–15 % continuation bonus
 
-    Returns a quality float in [0, ~1.15].
+    5. Buildup bonus — rising activity in the 4 s before the peak suggests
+       an escalating fight (not a random ambush).  Capped at +15 %.
+
+    6. Passivity penalty — if motion burstiness is uniformly low across the
+       window, motion is steady / uniform (spectating, idle walk, death-cam
+       replay).  Mean burst < 0.15 → 35 % penalty.
+
+    Returns a quality float in [0, ~1.3].  Multiply by 100 for score 0–100.
     """
     n          = len(combined)
     first_peak = group_peaks[0]
     last_peak  = group_peaks[-1]
     peak_val   = max(combined[min(p, n - 1)] for p in group_peaks)
 
-    # ── 1. Sustained intensity ────────────────────────────────────────────────
     win_start = max(0, first_peak - pre_roll)
     win_end   = min(n, last_peak + post_roll + 1)
     window    = combined[win_start:win_end]
+
+    # ── 1. Sustained intensity ────────────────────────────────────────────────
     if len(window) > 0:
         sorted_w  = np.sort(window)[::-1]
         sustained = float(np.mean(sorted_w[: max(1, len(sorted_w) // 2)]))
     else:
         sustained = float(peak_val)
 
-    # ── 2. Payoff check ───────────────────────────────────────────────────────
+    # ── 2. Spike width — utility / brief-skirmish penalty ────────────────────
+    # A grenade throw, smoke, or ability burst produces 1–3 high-intensity
+    # seconds then drops.  A real sustained fight holds above 50 % of peak for
+    # 4+ consecutive-ish seconds.  We count seconds inside the window that
+    # are ≥ 50 % of peak_val across the full capture window.
+    #
+    # Threshold 4 s chosen because:
+    #   - typical grenade arc + explosion ≈ 2–3 high-activity seconds
+    #   - shortest meaningful gunfight (2-player exchange) ≈ 3–5 s
+    #   - allows a 1-second dip inside a fight without triggering the penalty
+    high_threshold   = float(peak_val) * 0.50
+    high_count       = int(np.sum(window >= high_threshold))
+    spike_width_factor = 0.75 if high_count < 4 else 1.0
+
+    # ── 3. Immediate payoff (1–3 s after peak) ────────────────────────────────
     post_start  = min(n, last_peak + 1)
     post_end    = min(n, last_peak + 4)
     post_window = combined[post_start:post_end]
     if len(post_window) > 0:
-        post_mean     = float(np.mean(post_window))
-        payoff_ratio  = post_mean / (float(peak_val) + 1e-8)
-        # Only apply penalty when post-peak drops to < 10 % of peak.
-        # Floor tightened to 0.50 (was 0.60): death screens / hard-cut respawns
-        # that drop to near-zero now receive a stronger 50 % penalty.
+        post_mean    = float(np.mean(post_window))
+        payoff_ratio = post_mean / (float(peak_val) + 1e-8)
         payoff_factor = max(0.50, payoff_ratio / 0.10) if payoff_ratio < 0.10 else 1.0
     else:
+        post_mean     = 0.0
+        payoff_ratio  = 1.0
         payoff_factor = 1.0
 
-    # ── 3. Buildup bonus ──────────────────────────────────────────────────────
+    # ── 4. Extended collapse / continuation (4–8 s after peak) ───────────────
+    # Only evaluated when there is enough post-peak signal (≥ 5 s remaining).
+    # Events at the very end of a video are not penalised for running out of data.
+    ext_start = min(n, last_peak + 4)
+    ext_end   = min(n, last_peak + 9)
+
+    collapse_factor    = 1.0
+    continuation_bonus = 1.0
+
+    if (n - last_peak) >= 5 and ext_end > ext_start:
+        ext_window = combined[ext_start:ext_end]
+        ext_mean   = float(ext_window.mean()) if len(ext_window) > 0 else 0.0
+        ext_ratio  = ext_mean / (float(peak_val) + 1e-8)
+
+        if payoff_ratio < 0.10 and ext_ratio < 0.15:
+            # Confirmed failure arc: immediate drop → stays near-zero.
+            # Pattern: death screen, respawn lobby, or hard game-state reset.
+            # Applies on top of payoff_factor; together these can reach 0.35×
+            # which is enough to push most losing fights below min_score=50.
+            collapse_factor = 0.70
+        elif ext_ratio > 0.35:
+            # Player is still active 4–8 s after the peak: fight continued,
+            # objective captured, chase persisted — genuine highlight follow-through.
+            continuation_bonus = 1.15 if ext_ratio > 0.50 else 1.10
+
+    # ── 5. Buildup bonus ──────────────────────────────────────────────────────
     pre_start  = max(0, first_peak - 4)
     pre_window = combined[pre_start:first_peak]
     if len(pre_window) >= 2:
@@ -329,13 +381,7 @@ def _score_event_window(
     else:
         buildup_bonus = 1.0
 
-    # ── 4. Passivity penalty — spectating / idle walking / death-cam ──────────
-    # motion_burst is the temporal std-dev of raw motion scores (already computed,
-    # zero extra CPU cost).  A low mean across the window means motion is steady
-    # and uniform — the hallmark of spectating, camera-pan replays, or idle
-    # walking — NOT action the player was driving.
-    # Threshold 0.15 on the normalized [0,1] burst scale: empirically this
-    # separates passive moments from real combat/highlight bursts.
+    # ── 6. Passivity penalty — spectating / idle walking / death-cam ──────────
     if len(motion_burst) > 0:
         win_burst  = motion_burst[win_start:win_end]
         mean_burst = float(win_burst.mean()) if len(win_burst) > 0 else 0.0
@@ -343,7 +389,13 @@ def _score_event_window(
     else:
         passivity_factor = 1.0
 
-    return sustained * payoff_factor * buildup_bonus * passivity_factor
+    return (sustained
+            * spike_width_factor
+            * payoff_factor
+            * collapse_factor
+            * continuation_bonus
+            * buildup_bonus
+            * passivity_factor)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -364,14 +416,16 @@ def find_highlight_moments(
     Merges audio + motion scores, finds peaks, groups nearby peaks into event
     windows, filters by min_score, and returns the top max_clips events.
 
-    Improvements over the original:
+    Scoring model: setup → engagement → payoff → continuation arc.
     - 3-second rolling average smoothing before peak detection suppresses
       single-second noise (camera flashes, HUD blinks, brief menu overlays).
     - Baseline height threshold skips flat / idle segments.
     - Higher prominence (0.15) reduces false-positive peaks; two-tier fallback
       (retry at 0.05 before evenly-spaced) avoids over-filtering real clips.
-    - _score_event_window() replaces raw max(peak): uses sustained intensity,
-      payoff check, and build-up bonus for cross-game quality scoring.
+    - _score_event_window() models the full event arc using: sustained intensity,
+      spike width (catches utility-only bursts), immediate payoff, extended
+      collapse/continuation (catches failed fights and rewards follow-through),
+      buildup bonus, and passivity penalty (spectating/walking).
     - Diversity-aware greedy selection avoids clustered clips from one short
       burst while ignoring the rest of the video.
 
