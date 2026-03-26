@@ -268,6 +268,7 @@ def _score_event_window(
     pre_roll: int,
     post_roll: int,
     motion_burst: np.ndarray,
+    motion_raw: np.ndarray | None = None,
 ) -> float:
     """
     Scores an event window using six heuristic signals that together model the
@@ -301,6 +302,22 @@ def _score_event_window(
     6. Passivity penalty — if motion burstiness is uniformly low across the
        window, motion is steady / uniform (spectating, idle walk, death-cam
        replay).  Mean burst < 0.15 → 35 % penalty.
+
+    7. Hard signal collapse — detects a sharp >60 % drop within 2 s of the
+       peak that stays low in the extended window.  Kill-cam / respawn / menu
+       transitions produce a "cliff edge" that the gradual payoff check
+       misses.  Penalty: 40–50 %.
+
+    8. Death-cam / spectate detector — after the peak, if raw motion remains
+       moderate (camera panning) but burstiness drops to near-zero (steady,
+       non-reactive movement), this matches the kill-cam / spectate signature.
+       Penalty: 50 %.
+
+    9. Utility-only rejection — strengthens the spike-width penalty: if the
+       spike is narrow AND post-burst engagement is low, the moment is almost
+       certainly a grenade / smoke / ability with no follow-up fight.
+       Combined with spike_width_factor this can reach 0.34× (≈ score 34 for
+       a peak of 1.0), which reliably drops below min_score=50.
 
     Returns a quality float in [0, ~1.3].  Multiply by 100 for score 0–100.
     """
@@ -389,13 +406,88 @@ def _score_event_window(
     else:
         passivity_factor = 1.0
 
+    # ── 7. Hard signal collapse — death / loading / menu transition ──────────
+    # Detect a sharp drop (>60%) within 2 seconds of the peak that stays low.
+    # Kill-cam / spectate / respawn screens produce a distinctive "cliff edge"
+    # in the combined signal that the gradual payoff_factor misses because
+    # kill-cams still generate moderate ambient motion + audio.
+    #
+    # We look at the 2 seconds immediately after the peak: if the minimum
+    # value in that micro-window is < 40 % of peak AND the extended window
+    # (4–8 s) also stays below 30 %, this is a hard state transition.
+    cliff_factor = 1.0
+    micro_start = min(n, last_peak + 1)
+    micro_end   = min(n, last_peak + 3)   # 2-second micro-window
+    if micro_end > micro_start:
+        micro_window = combined[micro_start:micro_end]
+        micro_min    = float(np.min(micro_window))
+        micro_ratio  = micro_min / (float(peak_val) + 1e-8)
+        if micro_ratio < 0.40:
+            # Sharp drop detected — check if it stays low (extended window)
+            if ext_end > ext_start:
+                ext_window_vals = combined[ext_start:ext_end]
+                ext_max = float(np.max(ext_window_vals)) if len(ext_window_vals) > 0 else 0.0
+                ext_max_ratio = ext_max / (float(peak_val) + 1e-8)
+                if ext_max_ratio < 0.30:
+                    # Confirmed hard collapse: cliff + stays dead
+                    cliff_factor = 0.40
+            elif (n - last_peak) < 5:
+                pass  # not enough data, don't penalize
+            else:
+                cliff_factor = 0.50  # cliff detected but no extended data
+
+    # ── 8. Post-peak death-cam / spectate detector ────────────────────────────
+    # Death / spectate has a specific motion signature: raw motion stays
+    # moderate (camera slowly panning over the scene) but burstiness drops
+    # to near-zero (steady, non-reactive, automated camera movement).
+    # This catches cases where kill-cam motion keeps payoff_ratio above
+    # the 0.10 threshold, defeating the payoff penalty.
+    deathcam_factor = 1.0
+    if len(motion_burst) > 0 and motion_raw is not None and len(motion_raw) > 0:
+        post_burst_start = min(len(motion_burst), last_peak + 1)
+        post_burst_end   = min(len(motion_burst), last_peak + 6)  # 5s post-peak
+        if post_burst_end > post_burst_start:
+            post_burst = motion_burst[post_burst_start:post_burst_end]
+            post_burst_mean = float(np.mean(post_burst))
+            # Also check raw motion to confirm camera is still moving
+            post_motion = motion_raw[post_burst_start:post_burst_end]
+            post_motion_mean = float(np.mean(post_motion))
+            # Death-cam signature: motion present (>0.15) but burst near zero (<0.10)
+            if post_burst_mean < 0.10 and post_motion_mean > 0.15:
+                deathcam_factor = 0.50
+
+    # ── 9. Utility-only rejection — narrow spike with no engagement payoff ───
+    # Strengthens the spike_width_factor: if the spike is narrow (<4s) AND
+    # there is no sustained post-peak engagement, this is almost certainly
+    # a grenade / smoke / ability burst with no follow-up action.
+    # The original 0.75 penalty was insufficient because utility audio spikes
+    # push combined scores high enough to survive a 25% cut.
+    utility_reject_factor = 1.0
+    if spike_width_factor < 1.0:  # narrow spike detected
+        # Check if there's any sustained engagement after the burst
+        engage_start = min(n, last_peak + 2)
+        engage_end   = min(n, last_peak + 7)  # 5s post-burst window
+        if engage_end > engage_start:
+            engage_window = combined[engage_start:engage_end]
+            engage_mean   = float(np.mean(engage_window))
+            engage_ratio  = engage_mean / (float(peak_val) + 1e-8)
+            if engage_ratio < 0.25:
+                # Narrow spike + no follow-up engagement = utility-only
+                utility_reject_factor = 0.45  # combined with spike_width: 0.75 * 0.45 ≈ 0.34
+            elif engage_ratio < 0.40:
+                # Narrow spike + weak follow-up = marginal
+                utility_reject_factor = 0.65  # combined: 0.75 * 0.65 ≈ 0.49
+
     return (sustained
             * spike_width_factor
             * payoff_factor
             * collapse_factor
             * continuation_bonus
             * buildup_bonus
-            * passivity_factor)
+            * passivity_factor
+            * cliff_factor
+            * deathcam_factor
+            * utility_reject_factor)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -501,7 +593,7 @@ def find_highlight_moments(
         end   = min(int(video_duration), last_peak + post_roll)
 
         # Context-aware score: sustained + payoff + buildup + passivity (see _score_event_window)
-        quality = _score_event_window(combined, group, pre_roll, post_roll, motion_burst)
+        quality = _score_event_window(combined, group, pre_roll, post_roll, motion_burst, motion_raw=m)
         score   = int(min(100, quality * 100))
 
         events.append({"start": start, "end": end, "score": score})
