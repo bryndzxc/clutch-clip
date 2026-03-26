@@ -45,8 +45,10 @@ from scipy.signal import find_peaks
 # Fixed internal constants (not user-configurable)
 # ──────────────────────────────────────────────────────────────────────────────
 
-AUDIO_WEIGHT  = 0.5   # weight for audio-peak score
-MOTION_WEIGHT = 0.5   # weight for frame-difference score
+AUDIO_WEIGHT  = 0.40  # raw RMS amplitude per second
+MOTION_WEIGHT = 0.30  # raw frame-difference per second
+BURST_WEIGHT  = 0.20  # local temporal variance of motion (distinguishes action from walking/spectating)
+ADELTA_WEIGHT = 0.10  # audio change rate (rewards sudden audio events over constant ambient music)
 
 # Legacy mode: samples every 5th frame from the original full-res video,
 # then resizes each frame to 320×180 for the diff.
@@ -215,6 +217,44 @@ def compute_motion_scores(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Step 3a: Motion burstiness (temporal variance of motion scores)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def compute_motion_burstiness(motion_scores: np.ndarray, window: int = 5) -> np.ndarray:
+    """
+    Computes local temporal standard deviation of motion scores in a sliding window.
+
+    High variance = bursty, reactive motion → combat, teamfights, key plays.
+    Low variance  = steady-state motion → walking, spectating, camera panning.
+
+    This is computed purely from the already-computed motion_scores array — zero
+    extra FFmpeg / OpenCV work.  The result is used as BURST_WEIGHT in the
+    combined scoring signal to down-rank no-action / walking / spectate moments.
+
+    Returns a normalized [0, 1] float32 array of the same length.
+    """
+    n = len(motion_scores)
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    half       = window // 2
+    burstiness = np.zeros(n, dtype=np.float32)
+
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        chunk = motion_scores[lo:hi]
+        if len(chunk) >= 2:
+            burstiness[i] = float(np.std(chunk))
+
+    max_val = burstiness.max()
+    if max_val > 0:
+        burstiness /= max_val
+
+    return burstiness
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Step 3b: Context-aware event window scorer
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -314,7 +354,23 @@ def find_highlight_moments(
     a = np.pad(audio_scores,  (0, length - len(audio_scores)))
     m = np.pad(motion_scores, (0, length - len(motion_scores)))
 
-    combined = AUDIO_WEIGHT * a + MOTION_WEIGHT * m
+    # Motion burstiness: temporal std-dev of motion in a 5-second sliding window.
+    # Walking / spectating = low variance (steady motion) → down-ranked.
+    # Combat / action     = high variance (chaotic motion) → up-ranked.
+    motion_burst = compute_motion_burstiness(m)
+
+    # Audio delta: |RMS[t] - RMS[t-1]| per second.
+    # Constant ambient music keeps a steady RMS → near-zero delta (ignored).
+    # Action audio (gunfire, ability sounds, crowd surges) spikes sharply → high delta.
+    audio_delta = np.abs(np.diff(a, prepend=a[:1] if len(a) > 0 else np.zeros(1)))
+    ad_max = audio_delta.max()
+    if ad_max > 0:
+        audio_delta = (audio_delta / ad_max).astype(np.float32)
+
+    combined = (AUDIO_WEIGHT  * a
+                + MOTION_WEIGHT * m
+                + BURST_WEIGHT  * motion_burst
+                + ADELTA_WEIGHT * audio_delta)
 
     # Smooth with 3-second rolling average to reduce single-second noise spikes.
     # Peak detection uses smoothed; scoring uses the original combined values.

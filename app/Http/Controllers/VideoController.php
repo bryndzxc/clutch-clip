@@ -6,6 +6,7 @@ use App\Jobs\ProbeVideoJob;
 use App\Models\Clip;
 use App\Models\MontageProject;
 use App\Models\Video;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -130,6 +131,15 @@ class VideoController extends Controller
         $originalName = $request->input('filename');
         $chunkDir     = storage_path('app/' . config('clutchclip.chunks_dir') . '/' . $uploadId);
 
+        // ── Idempotency guard ─────────────────────────────────────────────────
+        // If this upload_id was already assembled (e.g. the browser retried after
+        // a timeout where the first request actually succeeded), return the
+        // existing Video record rather than attempting a second assembly.
+        $existing = Video::where('upload_id', $uploadId)->first();
+        if ($existing) {
+            return response()->json(['id' => $existing->id, 'status' => $existing->status], 200);
+        }
+
         // Verify every chunk landed before touching any of them
         for ($i = 0; $i < $totalChunks; $i++) {
             if (!file_exists("{$chunkDir}/chunk_{$i}")) {
@@ -160,11 +170,25 @@ class VideoController extends Controller
         // Ensure destination directory exists before writing
         @mkdir(dirname($absPath), 0755, true);
 
-        // Stream-assemble: read each chunk into the output file, delete chunk immediately
+        // Stream-assemble: read each chunk into the output file, delete chunk immediately.
+        // If a chunk file is already gone (concurrent duplicate request consumed it),
+        // abort this assembly — the other request won either the race or already won it.
         $out = fopen($absPath, 'wb');
         for ($i = 0; $i < $totalChunks; $i++) {
             $chunkPath = "{$chunkDir}/chunk_{$i}";
-            $in = fopen($chunkPath, 'rb');
+            $in = @fopen($chunkPath, 'rb');
+            if ($in === false) {
+                // Another concurrent assembly consumed this chunk first.
+                fclose($out);
+                @unlink($absPath);
+                // Give the winning request a moment to commit its Video record, then return it.
+                usleep(200_000); // 200 ms
+                $winner = Video::where('upload_id', $uploadId)->first();
+                if ($winner) {
+                    return response()->json(['id' => $winner->id, 'status' => $winner->status], 200);
+                }
+                return response()->json(['message' => 'Upload is already being processed. Please check your video history.'], 409);
+            }
             stream_copy_to_stream($in, $out);
             fclose($in);
             unlink($chunkPath);
@@ -184,15 +208,25 @@ class VideoController extends Controller
         }
 
         // Duration validation runs inside ProbeVideoJob — no blocking ffprobe here.
-        $video = Video::create([
-            'user_id'       => auth()->id(),
-            'filename'      => $filename,
-            'original_name' => $originalName,
-            'temp_path'     => $tempPath,
-            'size'          => $fileSize,
-            'status'        => 'queued',
-            'uploaded_at'   => now(),
-        ]);
+        // Wrap in try/catch: if two concurrent requests both passed the early idempotency
+        // check, only one INSERT will succeed due to the UNIQUE constraint on upload_id.
+        try {
+            $video = Video::create([
+                'user_id'       => auth()->id(),
+                'upload_id'     => $uploadId,
+                'filename'      => $filename,
+                'original_name' => $originalName,
+                'temp_path'     => $tempPath,
+                'size'          => $fileSize,
+                'status'        => 'queued',
+                'uploaded_at'   => now(),
+            ]);
+        } catch (QueryException $e) {
+            // Unique constraint on upload_id — another request won the race.
+            @unlink($absPath);
+            $winner = Video::where('upload_id', $uploadId)->firstOrFail();
+            return response()->json(['id' => $winner->id, 'status' => $winner->status], 200);
+        }
 
         ProbeVideoJob::dispatch($video->id);
 
