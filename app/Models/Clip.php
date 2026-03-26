@@ -16,6 +16,7 @@ class Clip extends Model
         'clip_path',
         'thumbnail_path',
         'score',
+        'confidence',
         'label',
         'refined_path',
         'muted',

@@ -398,6 +398,7 @@ class MontageProjectController extends Controller
             'thumbnail_url' => $clip->getThumbnailUrl(),
             'duration'      => (float) $clip->duration,
             'score'         => $clip->score,
+            'confidence'    => $clip->confidence,
             'start_time'    => $clip->start_time,
             'end_time'      => $clip->end_time,
             'label'         => $clip->label,

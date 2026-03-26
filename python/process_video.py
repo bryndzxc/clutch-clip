@@ -797,15 +797,25 @@ def find_highlight_moments(
         peaks, _ = find_peaks(smoothed, distance=2, prominence=0.05)
 
     if len(peaks) == 0:
+        # Evenly-spaced fallback: no peaks were found at any prominence level.
+        # Previous version used raw combined[center] as the score, bypassing
+        # all 14 quality heuristics.  Now we run _score_event_window on each
+        # candidate so utility/death/failure penalties still apply, and we
+        # filter by min_score so obviously bad moments don't appear.
         print("[peaks] No peaks found, using evenly spaced fallback.", file=sys.stderr)
         step   = max(1, int(video_duration / max_clips))
         events = []
         for i in range(max_clips):
-            center = step * (i + 1)
+            center = min(step * (i + 1), len(combined) - 1) if len(combined) > 0 else 0
             start  = max(0, center - pre_roll)
             end    = min(int(video_duration), center + post_roll)
-            score  = int(combined[min(center, len(combined) - 1)] * 100) if len(combined) > 0 else 0
-            events.append({"start": start, "end": end, "score": score})
+            quality = _score_event_window(
+                combined, [center], pre_roll, post_roll, motion_burst,
+                motion_raw=m, audio_raw=a, audio_delta=audio_delta,
+            )
+            score = int(min(100, quality * 100))
+            if score >= min_score:
+                events.append({"start": start, "end": end, "score": score, "confidence": "low"})
         return events
 
     peaks_sorted = sorted(peaks.tolist())
@@ -842,10 +852,27 @@ def find_highlight_moments(
         print(f"[peaks] All moments below min_score={min_score}, no clips will be generated.", file=sys.stderr)
         return []
 
-    # Diversity-aware greedy selection:
-    # Sort by score DESC, then pick events that are at least min_gap seconds
-    # apart from already-selected ones.  Falls back to filling remaining slots
-    # by score so clip count is preserved even with tight temporal distribution.
+    # ── Quality-tiered selection ─────────────────────────────────────────────
+    # Previous logic: fill remaining slots with any clip above min_score,
+    # regardless of quality.  This caused penalized smoke/assist clips (score
+    # 51–55) to fill slot 5 and appear as an equally-valid highlight.
+    #
+    # New policy:
+    #   1. Diversity-aware greedy selection (unchanged).
+    #   2. Fill remaining slots ONLY from clips above fill_floor (stronger
+    #      quality gate than min_score).  Weak clips don't fill slots.
+    #   3. Assign a confidence tier to each clip: "high" / "medium" / "low".
+    #      Frontend can use this to visually distinguish strong highlights
+    #      from marginal suggestions.
+    #
+    # The system may return fewer than max_clips — this is intentional.
+    # 3 strong highlights > 3 strong + 2 garbage.
+
+    # Fill floor: clips must be at least 15 points above min_score to fill
+    # remaining diversity slots.  This catches the borderline 51–64 clips
+    # that the scoring penalties pushed down but min_score alone didn't kill.
+    fill_floor = min_score + 15
+
     min_gap = max(merge_gap, pre_roll + post_roll + 2)
     events.sort(key=lambda e: e["score"], reverse=True)
 
@@ -857,15 +884,31 @@ def find_highlight_moments(
         if len(selected) >= max_clips:
             break
 
-    # Fill remaining slots with next-best events if diversity filtering fell short
+    # Fill remaining slots, but only with clips above the fill floor.
+    # This prevents weak-but-above-min_score clips from padding the output.
     if len(selected) < max_clips:
         selected_ids = {id(e) for e in selected}
         for event in events:
-            if id(event) not in selected_ids:
+            if id(event) not in selected_ids and event["score"] >= fill_floor:
                 selected.append(event)
                 selected_ids.add(id(event))
             if len(selected) >= max_clips:
                 break
+
+    # Assign confidence tiers based on score distribution.
+    # "high":   top-tier highlight — clearly strong.
+    # "medium": decent highlight — above fill floor.
+    # "low":    marginal — only included to meet diversity spread.
+    #
+    # Thresholds: high ≥ 75, medium ≥ fill_floor, low < fill_floor.
+    high_threshold = 75
+    for event in selected:
+        if event["score"] >= high_threshold:
+            event["confidence"] = "high"
+        elif event["score"] >= fill_floor:
+            event["confidence"] = "medium"
+        else:
+            event["confidence"] = "low"
 
     selected.sort(key=lambda e: e["start"])
     return selected

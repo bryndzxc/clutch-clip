@@ -92,6 +92,7 @@ class CutClipsJob implements ShouldQueue
                 'filename'   => $filename,
                 'clip_path'  => $clipsBaseDir . '/' . $video->id . '/' . $filename,
                 'score'      => $h['score'] ?? 0,
+                'confidence' => $h['confidence'] ?? null,
                 'label'      => $h['label'] ?? null,
             ]);
 

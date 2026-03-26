@@ -324,11 +324,13 @@ function ClipCard({ clip, index, onEdit }) {
                         </span>
                     )}
                     <span className={`bg-black/60 backdrop-blur-sm text-xs font-mono font-semibold px-2 py-0.5 rounded-md border ${
-                        isTop
+                        clip.confidence === 'high'
                             ? 'text-violet-200 border-violet-500/50'
+                            : clip.confidence === 'low'
+                            ? 'text-yellow-400/70 border-yellow-500/30'
                             : 'text-violet-300 border-violet-500/30'
                     }`}>
-                        ⚡ {clip.score}
+                        {clip.confidence === 'low' ? '? ' : ''}⚡ {clip.score}
                     </span>
                 </div>
             </div>

@@ -326,6 +326,7 @@ class VideoController extends Controller
             'end_time'      => $clip->end_time,
             'duration'      => $clip->duration,
             'score'         => $clip->score,
+            'confidence'    => $clip->confidence,
             'url'           => $clip->getUrl(),
             'thumbnail_url' => $clip->getThumbnailUrl(),
         ]);
@@ -392,6 +393,7 @@ class VideoController extends Controller
                 'end_time'      => $clip->end_time,
                 'duration'      => $clip->duration,
                 'score'         => $clip->score,
+                'confidence'    => $clip->confidence,
                 'url'           => $clip->getUrl(),
                 'thumbnail_url' => $clip->getThumbnailUrl(),
             ])->values()->all();
