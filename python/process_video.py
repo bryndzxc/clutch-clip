@@ -271,7 +271,8 @@ def _score_event_window(
     motion_raw: np.ndarray | None = None,
     audio_raw: np.ndarray | None = None,
     audio_delta: np.ndarray | None = None,
-) -> float:
+    _debug: bool = False,
+) -> float | tuple[float, dict]:
     """
     Scores an event window using six heuristic signals that together model the
     arc of a gaming highlight:  setup → engagement → payoff → continuation.
@@ -342,9 +343,15 @@ def _score_event_window(
         Penalty: 40–60 % depending on engagement seconds.
 
     14. Sustained follow-through — checks whether post-peak signal shows a
-        qualitative escalation (secondary peak = fight broke out after setup)
-        vs. monotonic decay (setup fizzled).  Catches utility setups that
-        dodge the narrow-spike gate.  Penalty: 30–55 %.
+        qualitative escalation (dip-then-rise = fight broke out after setup)
+        vs. monotonic decay or residual lingering (setup fizzled, or fight
+        tail mistaken for secondary engagement).  Penalty: 30–55 %.
+
+    15. Post-peak engagement quality (burstiness ratio) — catches smoke /
+        utility clips where spike_width was inflated by nearby activity
+        (skipping factor 9).  Compares post-peak combined level vs.
+        burstiness: high combined + low burst = ambient/visual-only
+        inflation, not real engagement.  Penalty: 30–40 %.
 
     Returns a quality float in [0, ~1.3].  Multiply by 100 for score 0–100.
     """
@@ -616,8 +623,14 @@ def _score_event_window(
     # peak.  This is a broader measure than spike_width's 50% — it captures
     # the full "time the viewer feels engaged."
     #
-    # Ending quality: activity in the last 3–4 s of available post-peak data.
-    # A bad ending = sub-15% of peak (death/spectate/inactivity).
+    # Ending quality: two tiers.
+    #   - "dead ending":  combined < 15 % of peak AND burst collapsed.
+    #     Clear death screen / respawn / menu.
+    #   - "deathcam ending": combined in 15–30 % of peak AND burst collapsed.
+    #     Deathcam / spectate generates moderate ambient activity (camera pan,
+    #     ambient audio) that keeps combined above 0.15 but burstiness is
+    #     near-zero because the movement is automated, not player-controlled.
+    #     Previous version used 0.15 threshold — deathcam activity dodged it.
     #
     # Strong engagement (≥ 6 s active) survives a bad ending — the fight
     # itself was the highlight.  Weak engagement (< 4 s) with a bad ending
@@ -629,33 +642,43 @@ def _score_event_window(
     # Ending quality: check the last 3–4 s of available post-peak signal
     ending_start = min(n, last_peak + 3)
     ending_end   = min(n, last_peak + 7)
-    bad_ending   = False
+    bad_ending       = False
+    deathcam_ending  = False
     if ending_end > ending_start and (n - last_peak) >= 4:
         ending_window = combined[ending_start:ending_end]
         if len(ending_window) > 0:
             ending_mean  = float(np.mean(ending_window))
             ending_ratio = ending_mean / (float(peak_val) + 1e-8)
 
-            # Confirm the ending is genuinely bad, not just a momentary dip:
-            # also check that motion burstiness collapsed (player not in
-            # control) to avoid penalising a fight where the player pauses
-            # briefly to reload or reposition.
-            ending_burst_bad = True
+            # Check burstiness in the ending window — low burst = not
+            # player-controlled (deathcam, spectate, ambient).
+            ending_burst_low = True
             if len(motion_burst) > ending_start:
                 eb_slice = motion_burst[ending_start:min(len(motion_burst), ending_end)]
                 if len(eb_slice) > 0:
-                    ending_burst_bad = float(np.mean(eb_slice)) < 0.12
+                    ending_burst_low = float(np.mean(eb_slice)) < 0.12
 
-            if ending_ratio < 0.15 and ending_burst_bad:
+            if ending_ratio < 0.15 and ending_burst_low:
                 bad_ending = True
+            elif ending_ratio < 0.30 and ending_burst_low:
+                # Deathcam / spectate: moderate activity but passive motion.
+                # This is the gap that the previous 0.15 threshold missed —
+                # kill-cam panning generates combined 0.15–0.25 while burst
+                # collapses to near-zero.
+                deathcam_ending = True
 
     if bad_ending:
         if engagement_seconds < 4:
-            # Weak engagement + bad ending → not a highlight
             weak_payoff_factor = 0.40
         elif engagement_seconds < 6:
-            # Moderate engagement + bad ending → marginal
             weak_payoff_factor = 0.60
+    elif deathcam_ending:
+        # Deathcam ending: slightly less severe than dead-silence ending,
+        # but still penalize weak engagements that lead to it.
+        if engagement_seconds < 4:
+            weak_payoff_factor = 0.45
+        elif engagement_seconds < 6:
+            weak_payoff_factor = 0.65
 
     # ── 14. Sustained follow-through for setup/utility events ─────────────
     # Factors 9 and 12 catch narrow spikes and impulse audio, but they miss
@@ -663,37 +686,53 @@ def _score_event_window(
     # moderate audio onset misses the delta threshold).
     #
     # This factor checks whether the post-peak signal shows a *qualitative
-    # escalation* (a fight broke out after the setup) vs. just *monotonic
-    # decay* (utility fizzled into nothing).
+    # escalation* — a genuinely NEW engagement after the original event —
+    # vs. just *monotonic decay* or *residual lingering* from the same event.
     #
-    # Shape analysis:
-    #   - Utility → fight: peak → brief dip → SECOND RISE (new local max
-    #     above 50% of peak_val in the 2–8 s post-peak window)
-    #   - Utility → nothing: peak → monotonic decay, no secondary rise
+    # Previous version checked: "is max(2–8 s) > 50 % of peak?"
+    # That was fooled by:
+    #   - Fight's own decay tail at t+2 (assist clip: still 0.50+ from the
+    #     same firefight, not a new engagement)
+    #   - Smoke/grenade lingering visual effects (OpenCV detects the visual
+    #     change as "motion" for 2–3 s after deployment)
     #
-    # Only penalise when the post-peak window is available (≥ 6 s of data
-    # after peak).  A secondary peak above 50% of peak_val = genuine
-    # follow-through; its absence + low mean = setup without payoff.
+    # Fixed version requires a DIP-THEN-RISE pattern:
+    #   1. Signal must first drop below 35 % of peak (the original event
+    #      has clearly ended)
+    #   2. Then rise back above 45 % of peak (a genuinely new event started)
+    #
+    # This ensures the "secondary peak" is actually a separate engagement,
+    # not just residual energy from the original spike.
     followthrough_factor = 1.0
-    ft_start = min(n, last_peak + 2)
+    ft_start = min(n, last_peak + 1)
     ft_end   = min(n, last_peak + 8)
 
     if (n - last_peak) >= 6 and ft_end > ft_start:
         ft_window = combined[ft_start:ft_end]
-        if len(ft_window) >= 3:
-            ft_max   = float(np.max(ft_window))
-            ft_mean  = float(np.mean(ft_window))
-            ft_max_ratio  = ft_max  / (float(peak_val) + 1e-8)
+        if len(ft_window) >= 4:
+            ft_mean      = float(np.mean(ft_window))
             ft_mean_ratio = ft_mean / (float(peak_val) + 1e-8)
 
-            has_secondary_peak = ft_max_ratio > 0.50
+            # Dip-then-rise detection: scan the post-peak window for a
+            # valley followed by a recovery.
+            dip_threshold  = float(peak_val) * 0.35
+            rise_threshold = float(peak_val) * 0.45
+            found_dip  = False
+            found_rise = False
+            for t in range(len(ft_window)):
+                val = float(ft_window[t])
+                if val < dip_threshold:
+                    found_dip = True
+                elif found_dip and val > rise_threshold:
+                    found_rise = True
+                    break
 
-            if not has_secondary_peak and ft_mean_ratio < 0.30:
-                # No secondary rise and low overall follow-through
-                # = setup / utility / isolated burst that went nowhere.
-                #
-                # Confirm with coherence: if post-peak also lacks audio-motion
-                # alignment, this is very likely utility-only.
+            has_genuine_followthrough = found_dip and found_rise
+
+            if not has_genuine_followthrough and ft_mean_ratio < 0.35:
+                # No dip-then-rise and low overall follow-through
+                # = setup / utility / isolated burst that went nowhere,
+                #   or a brief fight that simply decayed.
                 ft_coherent = True
                 if audio_raw is not None and motion_raw is not None:
                     ft_a = float(np.mean(audio_raw[ft_start:ft_end]))
@@ -701,28 +740,86 @@ def _score_event_window(
                     ft_coherent = ft_a > 0.18 and ft_m > 0.18
 
                 if not ft_coherent:
-                    # No secondary peak, low mean, incoherent channels
                     followthrough_factor = 0.45
                 else:
-                    # Low follow-through but channels are aligned — might be
-                    # a quiet sustained engagement.  Mild penalty only.
                     followthrough_factor = 0.70
 
-    return (sustained
-            * spike_width_factor
-            * payoff_factor
-            * collapse_factor
-            * continuation_bonus
-            * buildup_bonus
-            * passivity_factor
-            * cliff_factor
-            * deathcam_factor
-            * utility_reject_factor
-            * tail_factor
-            * coherence_factor
-            * audio_utility_factor
-            * weak_payoff_factor
-            * followthrough_factor)
+    # ── 15. Post-peak engagement quality (burstiness ratio) ────────────────
+    # When spike_width = 1.0 (nearby activity inflated high_count to 4+),
+    # factor 9 is completely skipped.  This leaves smoke / utility clips
+    # with elevated combined scores that look like sustained engagement.
+    #
+    # But real engagement has HIGH BURSTINESS (chaotic, reactive motion)
+    # while smoke aftermath / ambient activity has LOW BURSTINESS (steady
+    # visual change, slow camera pan, automated movement).
+    #
+    # This factor compares post-peak burstiness to the combined signal level.
+    # High combined + low burst = ambient/visual-only inflation.
+    # High combined + high burst = real player-controlled action.
+    #
+    # Only fires when there IS meaningful post-peak combined activity (ratio
+    # > 0.25 of peak) but burstiness is disproportionately low — the gap
+    # between "something is happening on screen" and "the player is actively
+    # fighting" is exactly the signature of utility aftermath or nearby
+    # teammate activity that doesn't involve this player.
+    engagement_quality_factor = 1.0
+    if len(motion_burst) > 0:
+        eq_start = min(n, last_peak + 2)
+        eq_end   = min(n, last_peak + 7)
+        if eq_end > eq_start and len(motion_burst) > eq_start:
+            eq_combined = combined[eq_start:eq_end]
+            eq_burst    = motion_burst[eq_start:min(len(motion_burst), eq_end)]
+            if len(eq_combined) > 0 and len(eq_burst) > 0:
+                eq_comb_ratio  = float(np.mean(eq_combined)) / (float(peak_val) + 1e-8)
+                eq_burst_mean  = float(np.mean(eq_burst))
+
+                # Combined signal is elevated (> 25 % of peak) but burstiness
+                # is very low (< 0.10) — the activity is ambient, not reactive.
+                if eq_comb_ratio > 0.25 and eq_burst_mean < 0.10:
+                    engagement_quality_factor = 0.60
+                # Even milder case: combined moderate, burst barely present
+                elif eq_comb_ratio > 0.20 and eq_burst_mean < 0.08:
+                    engagement_quality_factor = 0.70
+
+    score = (sustained
+             * spike_width_factor
+             * payoff_factor
+             * collapse_factor
+             * continuation_bonus
+             * buildup_bonus
+             * passivity_factor
+             * cliff_factor
+             * deathcam_factor
+             * utility_reject_factor
+             * tail_factor
+             * coherence_factor
+             * audio_utility_factor
+             * weak_payoff_factor
+             * followthrough_factor
+             * engagement_quality_factor)
+
+    if _debug:
+        factors = {
+            "sustained":       round(sustained, 3),
+            "spike_width":     spike_width_factor,
+            "payoff":          round(payoff_factor, 3),
+            "collapse":        collapse_factor,
+            "continuation":    continuation_bonus,
+            "buildup":         round(buildup_bonus, 3),
+            "passivity":       passivity_factor,
+            "cliff":           cliff_factor,
+            "deathcam":        deathcam_factor,
+            "utility_reject":  utility_reject_factor,
+            "tail":            tail_factor,
+            "coherence":       coherence_factor,
+            "audio_utility":   audio_utility_factor,
+            "weak_payoff":     weak_payoff_factor,
+            "followthrough":   followthrough_factor,
+            "engage_quality":  engagement_quality_factor,
+        }
+        return score, factors
+
+    return score
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -838,13 +935,14 @@ def find_highlight_moments(
         end   = min(int(video_duration), last_peak + post_roll)
 
         # Context-aware score: sustained + payoff + buildup + passivity (see _score_event_window)
-        quality = _score_event_window(
+        quality, factors = _score_event_window(
             combined, group, pre_roll, post_roll, motion_burst,
             motion_raw=m, audio_raw=a, audio_delta=audio_delta,
+            _debug=True,
         )
         score   = int(min(100, quality * 100))
 
-        events.append({"start": start, "end": end, "score": score})
+        events.append({"start": start, "end": end, "score": score, "_factors": factors})
 
     events = [e for e in events if e["score"] >= min_score]
 
@@ -911,6 +1009,27 @@ def find_highlight_moments(
             event["confidence"] = "low"
 
     selected.sort(key=lambda e: e["start"])
+
+    # ── Diagnostic log — factor breakdown for each selected clip ──────────
+    # Printed to stderr so it appears in Laravel logs but NOT in the JSON
+    # output that the job parses.  Shows exactly which factors fired and
+    # helps trace why a clip was selected or rejected.
+    for i, ev in enumerate(selected, 1):
+        factors = ev.get("_factors", {})
+        penalties = {k: v for k, v in factors.items() if v < 1.0}
+        bonuses   = {k: v for k, v in factors.items() if v > 1.0}
+        print(
+            f"[score] Clip {i}: {ev['start']}s–{ev['end']}s  "
+            f"score={ev['score']}  conf={ev.get('confidence','?')}  "
+            f"penalties={penalties or 'none'}  bonuses={bonuses or 'none'}",
+            file=sys.stderr,
+        )
+
+    # Strip internal debug data before returning — _factors is not part
+    # of the public JSON contract.
+    for ev in selected:
+        ev.pop("_factors", None)
+
     return selected
 
 

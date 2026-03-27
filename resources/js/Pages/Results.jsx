@@ -729,9 +729,29 @@ export default function Results({ video, initialClips = [], relatedProjects = []
                                         </button>
                                     )}
                                 </div>
-                                {clips.map((clip, i) => (
-                                    <ClipCard key={clip.id} clip={clip} index={i} onEdit={handleEditClip} />
-                                ))}
+                                {(() => {
+                                    const strongClips = clips.filter(c => c.confidence !== 'low');
+                                    const weakClips   = clips.filter(c => c.confidence === 'low');
+                                    return (
+                                        <>
+                                            {strongClips.map((clip, i) => (
+                                                <ClipCard key={clip.id} clip={clip} index={i} onEdit={handleEditClip} />
+                                            ))}
+                                            {weakClips.length > 0 && strongClips.length > 0 && (
+                                                <div className="flex items-center gap-3 pt-2 pb-1">
+                                                    <div className="flex-1 h-px bg-yellow-500/20" />
+                                                    <span className="text-xs text-yellow-500/60 font-medium whitespace-nowrap">
+                                                        Lower confidence
+                                                    </span>
+                                                    <div className="flex-1 h-px bg-yellow-500/20" />
+                                                </div>
+                                            )}
+                                            {weakClips.map((clip, i) => (
+                                                <ClipCard key={clip.id} clip={clip} index={strongClips.length + i} onEdit={handleEditClip} />
+                                            ))}
+                                        </>
+                                    );
+                                })()}
                             </div>
 
                             {/* Sidebar */}
