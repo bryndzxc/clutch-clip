@@ -70,6 +70,12 @@ class DetectHighlightsJob implements ShouldQueue
             $cmd[] = (string) $video->duration;
         }
 
+        // Diagnostic mode — appends --diagnose so per-clip analysis goes to stderr.
+        // Enabled via HIGHLIGHT_DIAGNOSE=true in .env; off by default.
+        if (config('services.python.highlight_diagnose')) {
+            $cmd[] = '--diagnose';
+        }
+
         Log::info("[DetectHighlightsJob] Video #{$video->id}: running Python detect-only. binary={$pythonBin}");
 
         // Process::run() with an array uses proc_open directly (no shell).

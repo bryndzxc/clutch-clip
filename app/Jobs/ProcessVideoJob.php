@@ -93,6 +93,12 @@ class ProcessVideoJob implements ShouldQueue
             escapeshellarg($settings['aspect_ratio']),
         );
 
+        // Diagnostic mode — appends --diagnose so per-clip analysis goes to stderr.
+        // Enabled via HIGHLIGHT_DIAGNOSE=true in .env; off by default.
+        if (config('services.python.highlight_diagnose')) {
+            $command .= ' --diagnose';
+        }
+
         $processTimeout = 1800;
         Log::info("[ProcessVideoJob] DIAG python_bin={$pythonBin} job_timeout={$this->timeout} process_timeout={$processTimeout} queue=" . config('queue.default'));
         Log::info("[ProcessVideoJob] Running: {$command}");

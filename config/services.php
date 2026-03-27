@@ -42,7 +42,8 @@ return [
     ],
 
     'python' => [
-        'bin' => env('PYTHON_BIN', 'python3'),
+        'bin'                => env('PYTHON_BIN', 'python3'),
+        'highlight_diagnose' => env('HIGHLIGHT_DIAGNOSE', false),
     ],
 
 ];
