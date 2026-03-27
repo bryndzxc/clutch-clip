@@ -823,6 +823,519 @@ def _score_event_window(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Diagnostic helpers — per-selected-clip observability
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _classify_event_center(
+    combined: np.ndarray,
+    group_peaks: list,
+    motion_burst: np.ndarray,
+    motion_raw: np.ndarray,
+    audio_raw: np.ndarray,
+    audio_delta: np.ndarray,
+    pre_roll: int,
+    post_roll: int,
+) -> dict:
+    """
+    Classifies what the event center is actually capturing.
+
+    Returns a dict with boolean flags:
+      utility_spike    — sharp impulse + rapid decay (grenade/smoke/ability)
+      combat_burst     — sustained high burstiness + audio-motion coherence
+      follow_through   — dip-then-rise pattern after peak (new engagement started)
+      tail_collapse    — signal dies within post_roll (clip ends on nothing)
+      ambient_inflation — combined stays elevated but burstiness is low (visual noise)
+    """
+    n = len(combined)
+    last_peak = group_peaks[-1]
+    first_peak = group_peaks[0]
+    peak_val = max(combined[min(p, n - 1)] for p in group_peaks)
+
+    result = {
+        "utility_spike": False,
+        "combat_burst": False,
+        "follow_through": False,
+        "tail_collapse": False,
+        "ambient_inflation": False,
+    }
+
+    # ── Utility spike: sharp audio onset → rapid audio silence ────────────
+    if len(audio_delta) > 0:
+        peak_idx = min(last_peak, len(audio_delta) - 1)
+        peak_ad = float(audio_delta[peak_idx])
+        post_ad_start = min(len(audio_delta), last_peak + 2)
+        post_ad_end = min(len(audio_delta), last_peak + 5)
+        if peak_ad > 0.40 and post_ad_end > post_ad_start:
+            post_ad_mean = float(np.mean(audio_delta[post_ad_start:post_ad_end]))
+            if post_ad_mean < 0.12:
+                result["utility_spike"] = True
+
+    # ── Combat burst: sustained burstiness + coherent audio-motion ────────
+    win_start = max(0, first_peak - pre_roll)
+    win_end = min(n, last_peak + post_roll + 1)
+    win_burst = motion_burst[win_start:win_end] if len(motion_burst) > 0 else np.array([])
+    if len(win_burst) >= 4:
+        burst_mean = float(np.mean(win_burst))
+        burst_high_count = int(np.sum(win_burst > 0.20))
+        # Check audio-motion coherence in the peak region
+        peak_region_start = max(0, first_peak - 1)
+        peak_region_end = min(n, last_peak + 3)
+        a_mean = float(np.mean(audio_raw[peak_region_start:peak_region_end]))
+        m_mean = float(np.mean(motion_raw[peak_region_start:peak_region_end]))
+        if burst_mean > 0.20 and burst_high_count >= 3 and a_mean > 0.20 and m_mean > 0.20:
+            result["combat_burst"] = True
+
+    # ── Follow-through: dip-then-rise after peak ─────────────────────────
+    ft_start = min(n, last_peak + 1)
+    ft_end = min(n, last_peak + 8)
+    if (n - last_peak) >= 6 and ft_end > ft_start:
+        ft_window = combined[ft_start:ft_end]
+        if len(ft_window) >= 4:
+            dip_threshold = float(peak_val) * 0.35
+            rise_threshold = float(peak_val) * 0.45
+            found_dip = False
+            for val in ft_window:
+                if float(val) < dip_threshold:
+                    found_dip = True
+                elif found_dip and float(val) > rise_threshold:
+                    result["follow_through"] = True
+                    break
+
+    # ── Tail collapse: last 3s of clip window near-zero ──────────────────
+    tail_len = min(3, post_roll)
+    tail_start = max(0, win_end - tail_len)
+    if tail_start < win_end and tail_start < n:
+        tail = combined[tail_start:min(win_end, n)]
+        if len(tail) > 0:
+            tail_ratio = float(np.mean(tail)) / (float(peak_val) + 1e-8)
+            if tail_ratio < 0.15:
+                result["tail_collapse"] = True
+
+    # ── Ambient inflation: combined elevated but burstiness flat ──────────
+    post_start = min(n, last_peak + 2)
+    post_end = min(n, last_peak + 7)
+    if post_end > post_start and len(motion_burst) > post_start:
+        post_comb = combined[post_start:post_end]
+        post_burst = motion_burst[post_start:min(len(motion_burst), post_end)]
+        if len(post_comb) > 0 and len(post_burst) > 0:
+            comb_ratio = float(np.mean(post_comb)) / (float(peak_val) + 1e-8)
+            burst_mean = float(np.mean(post_burst))
+            if comb_ratio > 0.25 and burst_mean < 0.10:
+                result["ambient_inflation"] = True
+
+    return result
+
+
+def _detect_window_contamination(
+    combined: np.ndarray,
+    group_peaks: list,
+    pre_roll: int,
+    post_roll: int,
+    motion_burst: np.ndarray,
+) -> dict:
+    """
+    Checks whether nearby activity within the capture window artificially
+    boosted the clip's score, even though the event center is weak.
+
+    Returns:
+      contaminated:        bool — nearby activity inflated the window
+      peak_contribution:   float — fraction of window energy from the peak region (±1s)
+      window_energy:       float — total combined energy in the window
+      peripheral_energy:   float — energy outside the peak ±2s region
+      spike_width_inflated: bool — high_count ≥ 4 due to peripheral activity
+    """
+    n = len(combined)
+    first_peak = group_peaks[0]
+    last_peak = group_peaks[-1]
+    peak_val = max(combined[min(p, n - 1)] for p in group_peaks)
+
+    win_start = max(0, first_peak - pre_roll)
+    win_end = min(n, last_peak + post_roll + 1)
+    window = combined[win_start:win_end]
+
+    window_energy = float(np.sum(window)) if len(window) > 0 else 0.0
+
+    # Peak core region: ±1s around each peak
+    core_mask = np.zeros(len(window), dtype=bool)
+    for p in group_peaks:
+        local_p = p - win_start
+        lo = max(0, local_p - 1)
+        hi = min(len(window), local_p + 2)
+        core_mask[lo:hi] = True
+
+    core_energy = float(np.sum(window[core_mask])) if np.any(core_mask) else 0.0
+    peripheral_energy = window_energy - core_energy
+    peak_contribution = core_energy / (window_energy + 1e-8)
+
+    # Check if spike_width would be inflated by peripheral seconds
+    high_threshold = float(peak_val) * 0.50
+    high_in_peripheral = int(np.sum(window[~core_mask] >= high_threshold)) if np.any(~core_mask) else 0
+    high_in_core = int(np.sum(window[core_mask] >= high_threshold)) if np.any(core_mask) else 0
+    spike_width_inflated = (high_in_core < 4) and (high_in_core + high_in_peripheral >= 4)
+
+    contaminated = spike_width_inflated or (peak_contribution < 0.40 and peripheral_energy > core_energy)
+
+    return {
+        "contaminated": contaminated,
+        "peak_contribution": round(peak_contribution, 3),
+        "window_energy": round(window_energy, 3),
+        "peripheral_energy": round(peripheral_energy, 3),
+        "spike_width_inflated": spike_width_inflated,
+        "high_seconds_core": high_in_core,
+        "high_seconds_peripheral": high_in_peripheral,
+    }
+
+
+def _analyze_recentering(
+    combined: np.ndarray,
+    group_peaks: list,
+    pre_roll: int,
+    post_roll: int,
+    motion_burst: np.ndarray,
+    audio_raw: np.ndarray,
+) -> dict:
+    """
+    If the clip contains both a setup phase and a payoff phase, checks whether
+    the clip should be re-centered closer to the payoff moment.
+
+    Looks for the strongest burst of coherent activity (audio + burst) AFTER
+    the detected peak center.  If a stronger moment exists downstream,
+    reports the recommended re-center timestamp and the quality gain.
+
+    Returns:
+      should_recenter:    bool
+      current_center:     int — current event center (last_peak)
+      payoff_timestamp:   int | None — recommended new center
+      payoff_strength:    float — strength of the payoff moment vs current peak
+      setup_payoff_gap:   int | None — seconds between setup and payoff
+    """
+    n = len(combined)
+    last_peak = group_peaks[-1]
+    peak_val = float(combined[min(last_peak, n - 1)])
+
+    result = {
+        "should_recenter": False,
+        "current_center": last_peak,
+        "payoff_timestamp": None,
+        "payoff_strength": 0.0,
+        "setup_payoff_gap": None,
+    }
+
+    # Scan 2–12s after the current peak for a stronger coherent moment.
+    # "Coherent" = both combined signal AND burstiness are elevated.
+    scan_start = min(n, last_peak + 2)
+    scan_end = min(n, last_peak + 13)
+
+    if scan_end <= scan_start:
+        return result
+
+    best_t = None
+    best_strength = 0.0
+
+    for t in range(scan_start, scan_end):
+        if t >= n:
+            break
+        c_val = float(combined[t])
+        b_val = float(motion_burst[t]) if t < len(motion_burst) else 0.0
+        a_val = float(audio_raw[t]) if t < len(audio_raw) else 0.0
+
+        # Coherent strength: requires all three signals contributing
+        strength = c_val * (0.5 + 0.25 * min(1.0, b_val / 0.20) + 0.25 * min(1.0, a_val / 0.20))
+
+        if strength > best_strength:
+            best_strength = strength
+            best_t = t
+
+    if best_t is not None and best_strength > peak_val * 0.80:
+        # There's a payoff moment at least 80% as strong as the current peak
+        result["should_recenter"] = True
+        result["payoff_timestamp"] = best_t
+        result["payoff_strength"] = round(best_strength / (peak_val + 1e-8), 3)
+        result["setup_payoff_gap"] = best_t - last_peak
+
+    return result
+
+
+def _diagnose_root_cause(
+    factors: dict,
+    classification: dict,
+    contamination: dict,
+    recentering: dict,
+    score: int,
+    min_score: int,
+) -> dict:
+    """
+    Given all diagnostic data for a selected clip, determines the root cause
+    for why a potentially weak clip survived selection.
+
+    Returns:
+      root_cause:           str — primary reason the clip survived
+      secondary_causes:     list[str] — contributing factors
+      is_false_positive:    bool — high confidence this is a bad clip
+      at_heuristic_limit:   bool — generic motion/audio can't distinguish this
+      recommended_action:   str — what to change next
+    """
+    penalties = {k: v for k, v in factors.items() if v < 1.0}
+    bonuses = {k: v for k, v in factors.items() if v > 1.0}
+    sustained = factors.get("sustained", 0)
+
+    root_cause = "unknown"
+    secondary = []
+    is_false_positive = False
+    at_heuristic_limit = False
+    recommended_action = "none"
+
+    # ── Case 1: Utility spike that dodged all penalties ───────────────────
+    if classification["utility_spike"] and not penalties:
+        root_cause = "utility_spike_unpenalized"
+        secondary.append("No penalty factors fired despite utility-spike classification")
+        is_false_positive = True
+        recommended_action = "Add direct utility-spike penalty using audio_delta impulse detection independent of spike_width"
+
+    # ── Case 2: Window contamination inflated spike width ─────────────────
+    elif contamination["spike_width_inflated"]:
+        root_cause = "window_contamination_inflated_spike_width"
+        secondary.append(f"Core had {contamination['high_seconds_core']} high-seconds but peripheral added {contamination['high_seconds_peripheral']} to reach 4+")
+        if classification["utility_spike"]:
+            secondary.append("Event center is a utility spike — peripheral activity masked it")
+            is_false_positive = True
+        recommended_action = "Score spike_width using only ±2s around peak center, not full capture window"
+
+    elif contamination["contaminated"] and not contamination["spike_width_inflated"]:
+        root_cause = "window_contamination_energy"
+        secondary.append(f"Peak contributed only {contamination['peak_contribution']:.0%} of window energy")
+        recommended_action = "Weight sustained-intensity calculation toward peak region, not full window"
+
+    # ── Case 3: Tail collapse not penalized enough ────────────────────────
+    elif classification["tail_collapse"] and factors.get("tail", 1.0) >= 0.70:
+        root_cause = "weak_tail_penalty"
+        secondary.append(f"Tail factor={factors.get('tail', 1.0)} too mild for a collapsed tail")
+        if not classification["combat_burst"]:
+            is_false_positive = True
+        recommended_action = "Strengthen tail_factor penalty when tail_ratio < 0.15 and no combat_burst classification"
+
+    # ── Case 4: Follow-through false positive ─────────────────────────────
+    elif classification["follow_through"] and not classification["combat_burst"]:
+        root_cause = "false_follow_through"
+        secondary.append("Dip-then-rise detected but no combat burst — likely visual artifact or nearby teammate action")
+        if classification["ambient_inflation"]:
+            secondary.append("Ambient inflation confirmed — rise is visual noise, not player engagement")
+            is_false_positive = True
+        recommended_action = "Require burstiness > 0.15 in the rise phase to confirm follow-through"
+
+    # ── Case 5: Ambient inflation without any penalty catching it ─────────
+    elif classification["ambient_inflation"] and factors.get("engage_quality", 1.0) >= 0.90:
+        root_cause = "ambient_inflation_unpenalized"
+        secondary.append("Post-peak combined elevated but burstiness flat — engage_quality factor didn't fire")
+        is_false_positive = True
+        recommended_action = "Widen engage_quality detection: lower combined threshold from 0.25 to 0.20 or raise burst threshold from 0.10 to 0.12"
+
+    # ── Case 6: Penalties fired but compounded insufficiently ─────────────
+    elif len(penalties) >= 2 and score >= min_score:
+        total_penalty = 1.0
+        for v in penalties.values():
+            total_penalty *= v
+        if total_penalty > 0.45:
+            root_cause = "insufficient_penalty_compounding"
+            secondary.append(f"Combined penalty product={total_penalty:.3f} — individual penalties too mild to compound below min_score")
+            secondary.append(f"Active penalties: {penalties}")
+            recommended_action = "Strengthen individual penalty values or add a compound-penalty floor"
+
+    # ── Case 7: Fallback behavior ─────────────────────────────────────────
+    elif sustained > 0.55 and not classification["combat_burst"]:
+        root_cause = "sustained_intensity_inflated"
+        secondary.append(f"Sustained={sustained:.3f} elevated without combat burst — likely visual/audio noise across window")
+        if classification["utility_spike"] or classification["ambient_inflation"]:
+            is_false_positive = True
+        recommended_action = "Weight sustained intensity by burstiness coherence, not just top-half average"
+
+    # ── Case 8: Everything looks correct — clip may be genuinely ambiguous
+    else:
+        root_cause = "ambiguous_event"
+        if classification["combat_burst"]:
+            secondary.append("Combat burst detected — clip may be a legitimate borderline highlight")
+        else:
+            secondary.append("No strong classification — event is ambiguous to motion/audio heuristics")
+            at_heuristic_limit = True
+        recommended_action = "Consider game-state aware detection (killfeed OCR, HUD element recognition) for disambiguation"
+
+    # ── Check if we're at the limit of generic heuristics ─────────────────
+    if not at_heuristic_limit:
+        # Even with a clear root cause, flag if the event type is inherently
+        # hard to distinguish from real highlights with just motion + audio.
+        if classification["utility_spike"] and classification["ambient_inflation"]:
+            at_heuristic_limit = True
+            secondary.append("Utility + ambient pattern is at the boundary of what motion/audio can resolve")
+        elif recentering["should_recenter"] and recentering["setup_payoff_gap"] and recentering["setup_payoff_gap"] > 6:
+            secondary.append("Setup-payoff gap > 6s — temporal structure too complex for fixed-window heuristics")
+            at_heuristic_limit = True
+
+    return {
+        "root_cause": root_cause,
+        "secondary_causes": secondary,
+        "is_false_positive": is_false_positive,
+        "at_heuristic_limit": at_heuristic_limit,
+        "recommended_action": recommended_action,
+    }
+
+
+def _emit_clip_diagnostic(
+    clip_index: int,
+    event: dict,
+    combined: np.ndarray,
+    group_peaks: list,
+    motion_burst: np.ndarray,
+    motion_raw: np.ndarray,
+    audio_raw: np.ndarray,
+    audio_delta: np.ndarray,
+    pre_roll: int,
+    post_roll: int,
+    min_score: int,
+):
+    """
+    Emits a full diagnostic report for a single selected clip to stderr.
+    Called only when --diagnose is active.
+    """
+    n = len(combined)
+    factors = event.get("_factors", {})
+    score = event["score"]
+    first_peak = group_peaks[0]
+    last_peak = group_peaks[-1]
+    peak_val = max(combined[min(p, n - 1)] for p in group_peaks)
+
+    classification = _classify_event_center(
+        combined, group_peaks, motion_burst, motion_raw, audio_raw, audio_delta,
+        pre_roll, post_roll,
+    )
+    contamination = _detect_window_contamination(
+        combined, group_peaks, pre_roll, post_roll, motion_burst,
+    )
+    recentering = _analyze_recentering(
+        combined, group_peaks, pre_roll, post_roll, motion_burst, audio_raw,
+    )
+    root_cause = _diagnose_root_cause(
+        factors, classification, contamination, recentering, score, min_score,
+    )
+
+    # ── Per-second signal profile around the event ────────────────────────
+    profile_start = max(0, first_peak - pre_roll - 2)
+    profile_end = min(n, last_peak + post_roll + 3)
+    signal_profile = []
+    for t in range(profile_start, profile_end):
+        marker = ""
+        if t in group_peaks:
+            marker = " ◆PEAK"
+        elif t == event["start"]:
+            marker = " ►START"
+        elif t == event["end"]:
+            marker = " ◄END"
+        signal_profile.append(
+            f"  t={t:>4d}  combined={combined[t]:.3f}  "
+            f"audio={audio_raw[t]:.3f}  motion={motion_raw[t]:.3f}  "
+            f"burst={motion_burst[t]:.3f}  adelta={audio_delta[t]:.3f}{marker}"
+        )
+
+    # ── Penalty / bonus breakdown ─────────────────────────────────────────
+    penalties = {k: v for k, v in factors.items() if v < 1.0}
+    bonuses = {k: v for k, v in factors.items() if v > 1.0}
+    neutral = {k: v for k, v in factors.items() if v == 1.0}
+
+    sep = "─" * 72
+    lines = [
+        f"\n{'═' * 72}",
+        f"  DIAGNOSTIC — Clip {clip_index}: {event['start']}s – {event['end']}s",
+        f"{'═' * 72}",
+        f"",
+        f"  Score: {score}    Confidence: {event.get('confidence', '?')}    Peak value: {peak_val:.3f}",
+        f"  Event center: t={last_peak}s    Peaks in group: {group_peaks}",
+        f"",
+        f"  {sep}",
+        f"  SIGNAL PROFILE (per-second)",
+        f"  {sep}",
+    ]
+    lines.extend(signal_profile)
+    lines.extend([
+        f"",
+        f"  {sep}",
+        f"  SCORING FACTORS",
+        f"  {sep}",
+        f"  Sustained intensity: {factors.get('sustained', '?')}",
+        f"  Penalties applied ({len(penalties)}):",
+    ])
+    if penalties:
+        for k, v in sorted(penalties.items(), key=lambda x: x[1]):
+            lines.append(f"    {k}: {v}")
+    else:
+        lines.append(f"    (none)")
+    lines.extend([
+        f"  Bonuses applied ({len(bonuses)}):",
+    ])
+    if bonuses:
+        for k, v in sorted(bonuses.items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"    {k}: {v}")
+    else:
+        lines.append(f"    (none)")
+    lines.append(f"  Neutral (no effect): {', '.join(sorted(neutral.keys())) or '(none)'}")
+
+    lines.extend([
+        f"",
+        f"  {sep}",
+        f"  EVENT CENTER CLASSIFICATION",
+        f"  {sep}",
+    ])
+    for k, v in classification.items():
+        flag = "YES" if v else "no"
+        lines.append(f"    {k}: {flag}")
+
+    lines.extend([
+        f"",
+        f"  {sep}",
+        f"  WINDOW CONTAMINATION",
+        f"  {sep}",
+        f"    Contaminated: {'YES' if contamination['contaminated'] else 'no'}",
+        f"    Peak contribution to window energy: {contamination['peak_contribution']:.0%}",
+        f"    Peripheral energy: {contamination['peripheral_energy']:.3f}  (window total: {contamination['window_energy']:.3f})",
+        f"    Spike-width inflated by peripherals: {'YES' if contamination['spike_width_inflated'] else 'no'}",
+        f"    High-seconds in core: {contamination['high_seconds_core']}  peripheral: {contamination['high_seconds_peripheral']}",
+    ])
+
+    lines.extend([
+        f"",
+        f"  {sep}",
+        f"  RE-CENTERING ANALYSIS",
+        f"  {sep}",
+        f"    Should re-center: {'YES' if recentering['should_recenter'] else 'no'}",
+        f"    Current center: t={recentering['current_center']}s",
+    ])
+    if recentering["should_recenter"]:
+        lines.extend([
+            f"    Payoff timestamp: t={recentering['payoff_timestamp']}s",
+            f"    Payoff strength vs peak: {recentering['payoff_strength']:.1%}",
+            f"    Setup-payoff gap: {recentering['setup_payoff_gap']}s",
+        ])
+
+    lines.extend([
+        f"",
+        f"  {sep}",
+        f"  ROOT CAUSE DIAGNOSIS",
+        f"  {sep}",
+        f"    Root cause: {root_cause['root_cause']}",
+        f"    Is false positive: {'YES' if root_cause['is_false_positive'] else 'no'}",
+        f"    At heuristic limit: {'YES' if root_cause['at_heuristic_limit'] else 'no'}",
+    ])
+    if root_cause["secondary_causes"]:
+        lines.append(f"    Contributing factors:")
+        for cause in root_cause["secondary_causes"]:
+            lines.append(f"      - {cause}")
+    lines.extend([
+        f"    Recommended action: {root_cause['recommended_action']}",
+        f"{'═' * 72}",
+    ])
+
+    print("\n".join(lines), file=sys.stderr)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Step 4: Combine scores, group peaks into event windows
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -835,6 +1348,7 @@ def find_highlight_moments(
     merge_gap: int,
     max_clips: int,
     min_score: int,
+    diagnose: bool = False,
 ) -> list[dict]:
     """
     Merges audio + motion scores, finds peaks, groups nearby peaks into event
@@ -942,7 +1456,7 @@ def find_highlight_moments(
         )
         score   = int(min(100, quality * 100))
 
-        events.append({"start": start, "end": end, "score": score, "_factors": factors})
+        events.append({"start": start, "end": end, "score": score, "_factors": factors, "_group_peaks": group})
 
     events = [e for e in events if e["score"] >= min_score]
 
@@ -1025,10 +1539,30 @@ def find_highlight_moments(
             file=sys.stderr,
         )
 
-    # Strip internal debug data before returning — _factors is not part
-    # of the public JSON contract.
+    # ── Full diagnostic mode — per-selected-clip deep analysis ────────────
+    if diagnose:
+        print(f"\n[diagnose] Full diagnostic for {len(selected)} selected clips:", file=sys.stderr)
+        for i, ev in enumerate(selected, 1):
+            group_peaks = ev.get("_group_peaks", [])
+            _emit_clip_diagnostic(
+                clip_index=i,
+                event=ev,
+                combined=combined,
+                group_peaks=group_peaks,
+                motion_burst=motion_burst,
+                motion_raw=m,
+                audio_raw=a,
+                audio_delta=audio_delta,
+                pre_roll=pre_roll,
+                post_roll=post_roll,
+                min_score=min_score,
+            )
+
+    # Strip internal debug data before returning — _factors / _group_peaks
+    # are not part of the public JSON contract.
     for ev in selected:
         ev.pop("_factors", None)
+        ev.pop("_group_peaks", None)
 
     return selected
 
@@ -1161,6 +1695,10 @@ def main():
     parser.add_argument("--resolution",   default="720p",     choices=["low", "720p"])
     parser.add_argument("--aspect-ratio", default="original", choices=["original", "vertical"])
 
+    # ── Diagnostic mode — full per-clip observability ─────────────────────────
+    parser.add_argument("--diagnose", action="store_true",
+                        help="Output detailed per-clip diagnostics to stderr for selected clips")
+
     args = parser.parse_args()
 
     # ── Decide mode ───────────────────────────────────────────────────────────
@@ -1235,6 +1773,7 @@ def main():
             merge_gap=args.merge_gap,
             max_clips=args.clip_count,
             min_score=args.min_score,
+            diagnose=args.diagnose,
         )
         print(f"[peaks] Found {len(moments)} highlight moments.", file=sys.stderr)
 
